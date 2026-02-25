@@ -1,7 +1,9 @@
 """
 GNS3 Copilot Agent Package
+GNS3 Copilot 代理包
 
 This package contains the main GNS3 Copilot agent implementation for network automation tasks.
+此包包含用于网络自动化任务的主要 GNS3 Copilot 代理实现。
 """
 
 from .checkpoint_utils import (
@@ -14,6 +16,7 @@ from .checkpoint_utils import (
 from .gns3_copilot import agent, langgraph_checkpointer
 
 # Dynamic version management
+# 动态版本管理
 try:
     from importlib.metadata import version
 

@@ -2,6 +2,7 @@
 
 """
 GNS3 Network Automation Assistant
+GNS3 网络自动化助手
 
 This module implements an AI-powered assistant for GNS3 network automation and management.
 It uses LangChain for agent orchestration and DeepSeek LLM for natural language processing.
@@ -12,8 +13,18 @@ The assistant provides comprehensive GNS3 topology management capabilities inclu
 - Managing VPCS (Virtual PC Simulator) commands
 - Starting and controlling GNS3 nodes
 
+此模块实现了用于 GNS3 网络自动化和管理的 AI 助手。
+它使用 LangChain 进行代理编排，使用 DeepSeek LLM 进行自然语言处理。
+助手提供全面的 GNS3 拓扑管理功能，包括：
+- 读取和分析 GNS3 项目拓扑
+- 创建和管理网络节点和链路
+- 在多个设备上执行网络配置和显示命令
+- 管理 VPCS（虚拟 PC 模拟器）命令
+- 启动和控制 GNS3 节点
+
 The assistant integrates with various tools to provide a complete network automation
 solution for GNS3 environments.
+助手与各种工具集成，为 GNS3 环境提供完整的网络自动化解决方案。
 """
 
 import operator
@@ -48,9 +59,11 @@ from gns3_copilot.tools_v2 import (
 from gns3_copilot.utils import get_config
 
 # Set up logger for GNS3 Copilot
+# 为 GNS3 Copilot 设置日志记录器
 logger = setup_logger("gns3_copilot", log_file="gns3_copilot.log")
 
 # Log loaded LLM model information
+# 记录加载的 LLM 模型信息
 model_name = get_config("MODEL_NAME")
 model_provider = get_config("MODE_PROVIDER")
 base_url = get_config("BASE_URL", "")
@@ -64,41 +77,59 @@ logger.info(
 )
 
 # Define the available tools for the agent
+# 定义代理可用的工具
 tools = [
-    GNS3TemplateTool(),  # Get GNS3 node templates
-    GNS3TopologyTool(),  # Read GNS3 topology information
-    GNS3CreateNodeTool(),  # Create new nodes in GNS3
-    GNS3LinkTool(),  # Create links between nodes
-    GNS3StartNodeTool(),  # Start GNS3 nodes
+    GNS3TemplateTool(),  # Get GNS3 node templates 获取 GNS3 节点模板
+    GNS3TopologyTool(),  # Read GNS3 topology information 读取 GNS3 拓扑信息
+    GNS3CreateNodeTool(),  # Create new nodes in GNS3 在 GNS3 中创建新节点
+    GNS3LinkTool(),  # Create links between nodes 在节点之间创建链路
+    GNS3StartNodeTool(),  # Start GNS3 nodes 启动 GNS3 节点
     ExecuteMultipleDeviceCommands(),  # Execute show/display commands on multiple devices
+                                       # 在多个设备上执行 show/display 命令
     ExecuteMultipleDeviceConfigCommands(),  # Execute configuration commands on multiple devices
+                                             # 在多个设备上执行配置命令
     VPCSMultiCommands(),  # Execute VPCS commands on multiple devices
+                          # 在多个设备上执行 VPCS 命令
     LinuxTelnetBatchTool(),  # Execute Linux commands via Telnet on multiple devices
+                              # 通过 Telnet 在多个设备上执行 Linux 命令
     GNS3CreateAreaDrawingTool(),  # Create area drawings in GNS3 topologies
+                                   # 在 GNS3 拓扑中创建区域绘图
 ]
 # Augment the LLM with tools
+# 使用工具增强 LLM
 tools_by_name = {tool.name: tool for tool in tools}
 # Model with tools will be created dynamically by the factory when needed
+# 带工具的模型将在需要时由工厂动态创建
 
 # Log application startup
+# 记录应用程序启动
 logger.info("GNS3 Copilot application starting up")
 logger.debug("Available tools: %s", [tool.__class__.__name__ for tool in tools])
 
 
 # Define state
+# 定义状态
 class MessagesState(TypedDict):
     """
     GNS3 Copilot conversation state management class.
+    GNS3 Copilot 对话状态管理类。
 
     Maintains the conversation state for the LangGraph workflow, including message history,
     call counters, and session titles for comprehensive dialogue management.
+    维护 LangGraph 工作流的对话状态，包括消息历史、调用计数器和会话标题，
+    用于全面的对话管理。
 
     Attributes:
         messages: List of conversation messages with cumulative updates using operator.add
+                  使用 operator.add 进行累积更新的对话消息列表
         llm_calls: Counter for tracking the number of LLM invocations
+                   用于跟踪 LLM 调用次数的计数器
         remaining_steps: Is automatically managed by LangGraph's RemainingSteps to track and limit recursion depth.
+                         由 LangGraph 的 RemainingSteps 自动管理，用于跟踪和限制递归深度
         conversation_title: Optional conversation title for session identification and management
+                            用于会话识别和管理的可选对话标题
         topology_info: Dictionary containing GNS3 project topology information
+                       包含 GNS3 项目拓扑信息的字典
     """
 
     messages: Annotated[list[AnyMessage], operator.add]
@@ -108,31 +139,38 @@ class MessagesState(TypedDict):
     remaining_steps: RemainingSteps
 
     # Optional conversation title
+    # 可选的对话标题
     conversation_title: str | None
 
     # Store the complete tuple selected by the user
+    # 存储用户选择的完整元组
     selected_project: tuple[str, str, int, int, str] | None
 
     # Store GNS3 topology information
+    # 存储 GNS3 拓扑信息
     topology_info: dict | None
 
 
-# Define llm call  node
+# Define llm call node
+# 定义 LLM 调用节点
 def llm_call(state: dict):
-    """LLM decides whether to call a tool or not"""
+    """LLM decides whether to call a tool or not. LLM 决定是否调用工具。"""
 
     current_prompt = load_system_prompt()
     # print(current_prompt)
 
     # Get the previously stored project tuple
+    # 获取之前存储的项目元组
     selected_p = state.get("selected_project")
 
     # Construct context messages
+    # 构建上下文消息
     context_messages = []
     topology_info = None
 
     if selected_p:
         # Convert tuple information to natural language to tell LLM which project user selected
+        # 将元组信息转换为自然语言告诉 LLM 用户选择了哪个项目
         project_info = (
             "User has selected project: "
             f"Project_Name={selected_p[0]}, "
@@ -144,6 +182,7 @@ def llm_call(state: dict):
         logger.debug("Project info for LLM context: %s", project_info)
 
         # Try to retrieve topology information
+        # 尝试获取拓扑信息
         try:
             topology_tool = GNS3TopologyTool()
             topology = topology_tool._run(project_id=selected_p[1])
@@ -155,6 +194,7 @@ def llm_call(state: dict):
                 )
 
                 # Convert topology dict to string for LLM consumption
+                # 将拓扑字典转换为字符串供 LLM 使用
                 topology_context = str(topology)
                 logger.debug("Topology context for LLM:\n%s", topology_context)
                 context_messages.append(
@@ -177,6 +217,7 @@ def llm_call(state: dict):
             )
 
     # Merge message lists
+    # 合并消息列表
     full_messages = (
         [SystemMessage(content=current_prompt)] + context_messages + state["messages"]
     )
@@ -184,6 +225,8 @@ def llm_call(state: dict):
 
     # Create fresh model with tools for each LLM call
     # This ensures configuration changes in .env take effect immediately
+    # 为每次 LLM 调用创建新的带工具的模型
+    # 这确保 .env 中的配置更改立即生效
     model_with_tools = create_base_model_with_tools(tools)
 
     return {
@@ -194,27 +237,34 @@ def llm_call(state: dict):
 
 
 # Define generate title node
+# 定义生成标题节点
 def generate_title(state: MessagesState) -> dict:
     """
     Generate a conversation title using a lightweight assistant LLM (title_model).
     This node is only executed when no title has been set yet (first round only).
+    使用轻量级助手 LLM（title_model）生成对话标题。
+    此节点仅在尚未设置标题时执行（仅第一轮）。
     """
 
     # Only generate a title if it hasn't been set yet
+    # 仅在尚未设置标题时生成标题
     if state.get("conversation_title") in [None, "New Session"]:
         messages = state["messages"]
 
         # Build the prompt for title generation
+        # 构建用于生成标题的提示
         title_prompt_messages = [
             SystemMessage(content=TITLE_PROMPT),
-            messages[0],  # User's first message
-            messages[-1],  # Assistant's final response in this turn
+            messages[0],  # User's first message 用户的第一条消息
+            messages[-1],  # Assistant's final response in this turn 助手在此轮的最终响应
         ]
         logger.debug("summary_messages for title generation: %s", title_prompt_messages)
 
         # Call the title generation model (create fresh instance for each call)
+        # 调用标题生成模型（为每次调用创建新实例）
         try:
             # Create fresh title model instance from current env configuration
+            # 从当前 env 配置创建新的标题模型实例
             title_model = create_title_model()
             response = title_model.invoke(
                 title_prompt_messages, config={"configurable": {"foo_temperature": 1.0}}
@@ -226,10 +276,13 @@ def generate_title(state: MessagesState) -> dict:
             new_title = raw_content.strip()
 
             # Safety: truncate long titles and avoid line breaks
+            # 安全处理：截断过长标题并避免换行
             if len(new_title) > 40:  # Increased limit for better Chinese support
+                                      # 增加限制以更好地支持中文
                 new_title = new_title[:38] + "..."
 
             # Remove unwanted characters
+            # 删除不需要的字符
             new_title = new_title.replace("\n", " ").replace('"', "").replace("'", "")
 
             if not new_title:
@@ -243,12 +296,14 @@ def generate_title(state: MessagesState) -> dict:
             return {"conversation_title": "Untitled Session"}
 
     # Title already exists → no update needed
+    # 标题已存在 → 无需更新
     return {}
 
 
 # Define tool node
+# 定义工具节点
 def tool_node(state: dict):
-    """Performs the tool call"""
+    """Performs the tool call. 执行工具调用。"""
 
     result = []
     for tool_call in state["messages"][-1].tool_calls:
@@ -259,21 +314,27 @@ def tool_node(state: dict):
 
 
 # Routing logic after the LLM node
+# LLM 节点后的路由逻辑
 def should_continue(
     state: MessagesState,
 ) -> Literal["tool_node", "title_generator_node", END]:
     """
     Determine the next step after the LLM has produced a response.
+    确定 LLM 生成响应后的下一步。
 
     - If the LLM requested any tool calls → route to tool_node
+      如果 LLM 请求任何工具调用 → 路由到 tool_node
     - If this is the first complete turn (llm_calls == 1) and no title exists → generate a title
+      如果这是第一个完整轮次（llm_calls == 1）且没有标题 → 生成标题
     - Otherwise → conversation is complete, go to END
+      否则 → 对话完成，转到 END
     """
     last_message = state["messages"][-1]
     llm_calls = state.get("llm_calls", 0)
     current_title = state.get("conversation_title")
 
     # LLM requested one or more tool executions
+    # LLM 请求一个或多个工具执行
     if last_message.tool_calls:
         logger.debug(
             "LLM requested %s tool call(s) → routing to 'tool_node'",
@@ -282,6 +343,7 @@ def should_continue(
         return "tool_node"
 
     # First full interaction completed and title not yet generated
+    # 第一次完整交互完成且标题尚未生成
     if current_title in [None, "GNS3 Session"]:
         logger.info(
             "First turn finished, no title yet → routing to 'title_generator_node'"
@@ -289,6 +351,7 @@ def should_continue(
         return "title_generator_node"
 
     # Normal completion (multi-turn conversation or title already exists)
+    # 正常完成（多轮对话或标题已存在）
     logger.debug(
         "Conversation turn complete (llm_calls= %s ) → routing to END", llm_calls
     )
@@ -296,22 +359,29 @@ def should_continue(
 
 
 # Routing logic after the tool node, Check remaining_steps
+# 工具节点后的路由逻辑，检查剩余步骤
 def recursion_limit_continue(state: MessagesState) -> Literal["llm_call", END]:
     """
     Routing logic after tool execution to prevent infinite recursion.
+    工具执行后的路由逻辑，防止无限递归。
 
     Determines whether to continue with another LLM call or end the conversation
     based on remaining steps and message type.
+    根据剩余步骤和消息类型确定是继续另一个 LLM 调用还是结束对话。
 
     Args:
         state: Current conversation state with messages and remaining steps
+               包含消息和剩余步骤的当前对话状态
 
     Returns:
         "llm_call" to continue processing, END to terminate conversation
+        "llm_call" 继续处理，END 终止对话
 
     Logic:
         - If the last message is ToolMessage and steps >= 4: continue to LLM
+          如果最后一条消息是 ToolMessage 且步骤 >= 4：继续到 LLM
         - Otherwise: end the conversation to prevent infinite loops
+          否则：结束对话以防止无限循环
     """
     last_message = state["messages"][-1]
     if isinstance(last_message, ToolMessage):
@@ -323,41 +393,53 @@ def recursion_limit_continue(state: MessagesState) -> Literal["llm_call", END]:
 
 
 # Build and compile the agent
+# 构建并编译代理
 # Build workflow
+# 构建工作流
 agent_builder = StateGraph(MessagesState)
 
 # Add nodes
+# 添加节点
 agent_builder.add_node("llm_call", llm_call)
 agent_builder.add_node("tool_node", tool_node)
 agent_builder.add_node("title_generator_node", generate_title)
 
 # Add edges to connect nodes
+# 添加边以连接节点
 agent_builder.add_edge(START, "llm_call")
 # Conditional routing after LLM response
 # Determines the next step based on whether LLM needs to call tools or generate title
+# LLM 响应后的条件路由
+# 根据 LLM 是否需要调用工具或生成标题来确定下一步
 agent_builder.add_conditional_edges(
     "llm_call",
     should_continue,
     {
         "tool_node": "tool_node",  # Route to tool execution if LLM requested tools
+                                    # 如果 LLM 请求工具则路由到工具执行
         "title_generator_node": "title_generator_node",  # Generate title on first interaction
-        END: END,  # End conversation if no tools needed
+                                                          # 在第一次交互时生成标题
+        END: END,  # End conversation if no tools needed 如果不需要工具则结束对话
     },
 )
 # Conditional routing after tool execution
 # Prevents infinite recursion by checking remaining steps before continuing
+# 工具执行后的条件路由
+# 通过在继续之前检查剩余步骤来防止无限递归
 agent_builder.add_conditional_edges(
     "tool_node",
     recursion_limit_continue,
     {
         "llm_call": "llm_call",  # Continue to LLM if tools executed and steps remain
-        END: END,  # End conversation to prevent infinite loops
+                                  # 如果工具已执行且步骤剩余则继续到 LLM
+        END: END,  # End conversation to prevent infinite loops 结束对话以防止无限循环
     },
 )
 
 agent_builder.add_edge("title_generator_node", END)
 
 # Add checkpointing
+# 添加检查点
 LANGGRAPH_DB_PATH = "gns3_langgraph.db"
 
 
@@ -365,32 +447,43 @@ LANGGRAPH_DB_PATH = "gns3_langgraph.db"
 def get_checkpointer() -> SqliteSaver:
     """
     Create and cache a single SqliteSaver instance for the entire app lifetime.
+    为整个应用程序生命周期创建并缓存单个 SqliteSaver 实例。
 
     Important notes:
     - `check_same_thread=False` is required because Streamlit runs in a multi-threaded environment.
     - The returned checkpointer is automatically shared across all user sessions.
+    重要说明：
+    - 需要 `check_same_thread=False`，因为 Streamlit 在多线程环境中运行。
+    - 返回的检查点器自动在所有用户会话之间共享。
     """
     conn = sqlite3.connect(LANGGRAPH_DB_PATH, check_same_thread=False)
     # SqliteSaver will create the necessary tables on first use
+    # SqliteSaver 将在首次使用时创建必要的表
     return SqliteSaver(conn)
 
 
 # Compile the agent
+# 编译代理
 @st.cache_resource(show_spinner="Compiling LangGraph agent...")
 def get_agent():
     """
     Compile and cache the LangGraph agent.
+    编译并缓存 LangGraph 代理。
 
     Args:
         checkpointer: Optional checkpointer for persistence.
                      If None, uses the default SqliteSaver for Streamlit.
+                     用于持久化的可选检查点器。
+                     如果为 None，则使用 Streamlit 的默认 SqliteSaver。
     """
     return agent_builder.compile(
         checkpointer=get_checkpointer(),
     )
 
 
-langgraph_checkpointer = get_checkpointer()  # Cached SqliteSaver instance
+langgraph_checkpointer = get_checkpointer()  # Cached SqliteSaver instance 缓存的 SqliteSaver 实例
 
 # Streamlit UI use
+# Streamlit UI 使用
 agent = get_agent()  # Cached compiled LangGraph agent (with persistence)
+                     # 缓存的编译后 LangGraph 代理（带持久化）

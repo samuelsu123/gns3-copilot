@@ -1,6 +1,7 @@
 """
 This module provides a LangChain BaseTool to retrieve the topology of a
  specific GNS3 project by project ID.
+此模块提供 LangChain BaseTool，用于通过项目 ID 检索特定 GNS3 项目的拓扑。
 """
 
 import copy
@@ -12,12 +13,15 @@ from gns3_copilot.gns3_client import Project, get_gns3_connector
 from gns3_copilot.log_config import setup_tool_logger
 
 # Configure logging
+# 配置日志
 logger = setup_tool_logger("gns3_topology_reader")
 
 
 # Define LangChain tool class
+# 定义 LangChain 工具类
 class GNS3TopologyTool(BaseTool):
-    """LangChain tool for retrieving GNS3 project topology information."""
+    """LangChain tool for retrieving GNS3 project topology information.
+    用于检索 GNS3 项目拓扑信息的 LangChain 工具。"""
 
     name: str = "gns3_topology_reader"
     description: str = """
@@ -41,22 +45,29 @@ class GNS3TopologyTool(BaseTool):
     ) -> dict:
         """
         Synchronous method to retrieve the topology of a specific GNS3 project.
+        同步方法，用于检索特定 GNS3 项目的拓扑。
 
-        Args:
+        Args: 参数：
             tool_input : Input parameters, typically a dict or Pydantic model containing server_url.
-            run_manager : Callback manager for tool run.
+                         输入参数，通常是包含 server_url 的字典或 Pydantic 模型。
+            run_manager : Callback manager for tool run. 工具运行的回调管理器。
             project_id : The UUID of the specific GNS3 project to retrieve topology from.
+                         要检索拓扑的特定 GNS3 项目的 UUID。
 
-        Returns:
+        Returns: 返回：
             dict: A dictionary containing the project ID, name, status, nodes, and links,
                   or an error dictionary if an exception occurs or project_id is not provided.
+                  包含项目 ID、名称、状态、节点和链路的字典，
+                  如果发生异常或未提供 project_id 则返回错误字典。
         """
 
         # Log received input
+        # 记录接收到的输入
         logger.info("Received tool_input: %s, project_id: %s", tool_input, project_id)
 
         try:
             # Validate project_id parameter
+            # 验证 project_id 参数
             if not project_id:
                 logger.error("project_id parameter is required.")
                 return {
@@ -64,6 +75,7 @@ class GNS3TopologyTool(BaseTool):
                 }
 
             # Initialize Gns3Connector using factory function
+            # 使用工厂函数初始化 Gns3Connector
             logger.info("Connecting to GNS3 server...")
             server = get_gns3_connector()
 
@@ -74,11 +86,13 @@ class GNS3TopologyTool(BaseTool):
                 }
 
             # Use the provided project_id directly
+            # 直接使用提供的 project_id
             logger.info(f"Retrieving topology for project_id: {project_id}")
             project = Project(project_id=project_id, connector=server)
             project.get()  # Load project details
 
             # Get topology JSON: includes nodes (devices), links, etc.
+            # 获取拓扑 JSON：包括节点（设备）、链路等
             topology = {
                 "project_id": project.project_id,
                 "name": project.name,
@@ -90,6 +104,7 @@ class GNS3TopologyTool(BaseTool):
             }
 
             # Log topology result
+            # 记录拓扑结果
             logger.info("Topology retrieved: %s", topology)
 
             return topology
@@ -102,6 +117,8 @@ class GNS3TopologyTool(BaseTool):
         """
         Clean and simplify the nodes data structure.
         Simplify each node's ports list to only keep name and short_name fields.
+        清理并简化节点数据结构。
+        简化每个节点的端口列表，只保留 name 和 short_name 字段。
         """
         for node in data.values():  # Iterate through R-1, R-2, R-3, R-4
             if "ports" in node and isinstance(node["ports"], list):
@@ -116,10 +133,13 @@ if __name__ == "__main__":
     from pprint import pprint
 
     # Test the tool
+    # 测试工具
     tool = GNS3TopologyTool()
 
     # Example usage with project_id
     # Replace with an actual project UUID from your GNS3 server
+    # 使用 project_id 的示例用法
+    # 替换为您 GNS3 服务器上的实际项目 UUID
     example_project_id = "0c0fde25-6ead-4413-a283-ea8fd2324291"
 
     print("Testing GNS3TopologyTool with project_id...")
@@ -127,6 +147,7 @@ if __name__ == "__main__":
     pprint(result)
 
     # Test without project_id (should return error)
+    # 不带 project_id 测试（应返回错误）
     print("\nTesting without project_id (should return error)...")
     error_result = tool._run()
     pprint(error_result)

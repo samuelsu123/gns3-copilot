@@ -189,3 +189,5 @@ test/session_metadata.sqlite
 .pypirc
 .langgraph_api/*
 notes/*.md
+
+.junie/*

@@ -1,29 +1,41 @@
 """
 GNS3 Client Package
+GNS3 客户端包
 
 This package provides a Python interface for interacting with GNS3 servers.
 It's adapted from the upstream gns3fy project with modifications for compatibility
 with langchain and reduced dependency conflicts.
+此包提供用于与 GNS3 服务器交互的 Python 接口。
+它改编自上游 gns3fy 项目，并进行了修改以兼容 langchain 并减少依赖冲突。
 
-Main classes:
+Main classes: 主要类：
 - Gns3Connector: Connector for GNS3 server API interaction
-- Project: GNS3 Project management
-- Node: GNS3 Node management
-- Link: GNS3 Link management
-- GNS3TopologyTool: GNS3 topology reading tool
+                 用于 GNS3 服务器 API 交互的连接器
+- Project: GNS3 Project management GNS3 项目管理
+- Node: GNS3 Node management GNS3 节点管理
+- Link: GNS3 Link management GNS3 链路管理
+- GNS3TopologyTool: GNS3 topology reading tool GNS3 拓扑读取工具
 - GNS3ProjectReadFileTool: LangChain tool for reading project files
+                           用于读取项目文件的 LangChain 工具
 - GNS3ProjectWriteFileTool: LangChain tool for writing project files
+                            用于写入项目文件的 LangChain 工具
 - GNS3ProjectListFilesTool: LangChain tool for listing project files
+                            用于列出项目文件的 LangChain 工具
 - GNS3ProjectLock: LangChain tool for locking/unlocking GNS3 projects
+                   用于锁定/解锁 GNS3 项目的 LangChain 工具
 
-File Manager Modules:
+File Manager Modules: 文件管理模块：
 - gns3_project_read_file: GNS3ProjectReadFileTool implementation
+                          GNS3ProjectReadFileTool 实现
 - gns3_project_write_file: GNS3ProjectWriteFileTool implementation
+                           GNS3ProjectWriteFileTool 实现
 - gns3_project_list_files: GNS3ProjectListFilesTool implementation
-- gns3_file_index: File index management utilities
+                           GNS3ProjectListFilesTool 实现
+- gns3_file_index: File index management utilities 文件索引管理工具
 
-Main functions:
+Main functions: 主要函数：
 - get_gns3_connector: Factory function to create Gns3Connector from environment
+                      从环境创建 Gns3Connector 的工厂函数
 """
 
 from .connector_factory import get_gns3_connector
