@@ -1,30 +1,42 @@
 # mypy: ignore-errors
 """
 GNS3 Copilot - AI-Powered Network Engineering Assistant
+GNS3 助手 - AI 驱动的网络工程助手
 
 This module implements the main Streamlit web application for GNS3 Copilot,
 an AI-powered assistant designed to help network engineers with GNS3-related
 tasks through a conversational chat interface.
 
-Features:
+本模块实现了 GNS3 Copilot 的主 Streamlit Web 应用程序，
+这是一个人工智能驱动的助手，旨在通过对话聊天界面帮助网络工程师完成 GNS3 相关任务。
+
+Features / 功能：
 - Real-time chat interface with streaming responses
+  实时聊天界面，支持流式响应
 - Integration with LangChain agents for intelligent conversation
+  与 LangChain 代理集成，实现智能对话
 - Tool calling support for GNS3 network operations
+  支持工具调用以执行 GNS3 网络操作
 - Message history and session state management
+  消息历史和会话状态管理
 - Support for multiple message types (Human, AI, Tool messages)
+  支持多种消息类型（用户消息、AI 消息、工具消息）
 - Interactive tool call and response visualization
+  交互式工具调用和响应可视化
 
-The application leverages:
-- Streamlit for the web UI
-- LangGraph for AI agent functionality
-- Custom GNS3 integration tools
-- Session-based conversation tracking with unique thread IDs
+The application leverages / 应用程序利用：
+- Streamlit for the web UI / Streamlit 用于 Web UI
+- LangGraph for AI agent functionality / LangGraph 用于 AI 代理功能
+- Custom GNS3 integration tools / 自定义 GNS3 集成工具
+- Session-based conversation tracking with unique thread IDs / 基于会话的对话跟踪，使用唯一的线程 ID
 
-Usage:
+Usage / 使用方法：
 Run this module directly to start the GNS3 Copilot web interface:
+直接运行此模块以启动 GNS3 Copilot Web 界面：
     streamlit run app.py
 
 Note: Requires proper configuration of GNS3 server and API credentials.
+注意：需要正确配置 GNS3 服务器和 API 凭据。
 """
 
 import json
@@ -55,7 +67,7 @@ logger = setup_logger("chat")
 
 
 def _parse_bool(value: Any, default: bool = False) -> bool:
-    """Parse session/config value to bool."""
+    """将会话/配置值解析为布尔值。Parse session/config value to bool."""
     if isinstance(value, bool):
         return value
     if value is None:
@@ -70,7 +82,7 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
 
 
 def _get_snapshot_values(snapshot: Any) -> dict[str, Any]:
-    """Extract state values from a LangGraph snapshot-like object."""
+    """从 LangGraph 快照对象中提取状态值。Extract state values from a LangGraph snapshot-like object."""
     if snapshot is None:
         return {}
 
@@ -83,7 +95,7 @@ def _get_snapshot_values(snapshot: Any) -> dict[str, Any]:
 
 
 def _render_simulated_topology_data(snapshot: Any) -> None:
-    """Render dry-run topology payload if available."""
+    """如果可用，渲染干运行（dry-run）拓扑数据。Render dry-run topology payload if available."""
     values = _get_snapshot_values(snapshot)
     simulated_topology = values.get("simulated_topology")
 
@@ -131,32 +143,43 @@ def _render_simulated_topology_data(snapshot: Any) -> None:
         )
 
 
+# 初始化线程 ID 的会话状态
 # Initialize session state for thread ID
 if "thread_id" not in st.session_state:
+    # 如果会话状态中没有 thread_id，创建并保存一个新的
     # If thread_id is not in session_state, create and save a new one
     st.session_state["thread_id"] = str(uuid.uuid4())
 
+# 初始化 iframe URL 模式（项目页面 vs 登录页面）
 # Initialize iframe URL mode (project page vs login page)
 if "gns3_url_mode" not in st.session_state:
     st.session_state.gns3_url_mode = "project"
 
+# 初始化 iframe 可见性状态
 # Initialize iframe visibility state
+# 用于显示/隐藏 GNS3 拓扑界面
 # Used to show/hide GNS3 topology interface
 if "show_iframe" not in st.session_state:
     st.session_state.show_iframe = False
 
+# 为新会话初始化临时选定的项目
 # Initialize temp_selected_project for new sessions
 if "temp_selected_project" not in st.session_state:
     st.session_state["temp_selected_project"] = None
 
+# 获取当前线程 ID
 current_thread_id = st.session_state["thread_id"]
 
+# 从会话状态获取选定的线程 ID 和标题（由侧边栏设置）
 # Get selected thread ID and title from session state (set by sidebar)
 selected_thread_id = st.session_state.get("selected_thread_id")
 title = st.session_state.get("session_title")
 
 
+# 为每个会话创建唯一的线程 ID
 # Unique thread ID for each session
+# 如果选择了一个会话，使用其线程 ID 继续对话；
+# 否则初始化一个新的线程 ID
 # If a session is selected, continue the conversation using its thread ID;
 # otherwise, initialize a new thread ID.
 if selected_thread_id:
@@ -173,18 +196,23 @@ else:
         "recursion_limit": 28,
     }
 
+# --- 获取当前状态 ---
 # --- Get current state ---
 if selected_thread_id:
+    # 历史会话：从代理状态获取
     # Historical session: get from agent state
     snapshot = agent.get_state(config)
     selected_p = snapshot.values.get("selected_project")
 else:
+    # 新会话：从临时存储获取
     # New session: get from temp storage
     selected_p = st.session_state.get("temp_selected_project")
 
 dry_run_enabled = _parse_bool(st.session_state.get("TOPOLOGY_DRY_RUN", True), True)
 
+# 在干运行模式下，允许虚拟项目，GNS3 服务器是可选的
 # In dry-run mode, allow a virtual project so GNS3 server is optional.
+# 当用户只想要生成的拓扑数据时，这避免了项目列表/创建 API 的依赖
 # This avoids project list/create API dependency when users only want generated topology data.
 if dry_run_enabled and not selected_p:
     dry_run_project = ("Dry Run Project", "dry-run-project-id", 0, 0, "opened")
@@ -194,6 +222,7 @@ if dry_run_enabled and not selected_p:
         st.session_state["temp_selected_project"] = dry_run_project
     selected_p = dry_run_project
 
+# --- 逻辑分支：如果没有选择项目，显示项目卡片 ---
 # --- Logic branch: If no project is selected, display project cards ---
 if not selected_p:
     st.markdown(
@@ -207,9 +236,11 @@ if not selected_p:
         width=800,
     )
 
+    # 渲染创建项目表单
     # Render create project form
     render_create_project_form()
 
+    # 获取项目列表并渲染项目卡片
     # Get project list and render project cards
     projects = GNS3ProjectList()._run().get("projects", [])
     if projects:
@@ -219,11 +250,14 @@ if not selected_p:
         if st.button("Refresh List"):
             st.rerun()
 else:
+    # 保存当前项目到会话状态以供侧边栏显示
     # Save current project to session_state for sidebar display
     st.session_state["current_project"] = selected_p
 
+# --- 主工作区（仅在选择项目时可见） ---
 # --- Main workspace (only visible when a project is selected) ---
 if selected_p:
+    # 基于 iframe 可见性的动态列布局
     # Dynamic column layout based on iframe visibility
     if st.session_state.show_iframe:
         layout_col1, layout_col2 = st.columns([3, 7], gap="medium")
@@ -242,18 +276,22 @@ if selected_p:
                 """,
                 unsafe_allow_html=True,
             )
-            # StateSnapshot state example test/langgraph_checkpoint.json file
+            # 从状态历史显示之前的消息
             # Display previous messages from state history
             if st.session_state.get("state_history") is not None:
+                # StateSnapshot 值字典
                 # StateSnapshot values dictionary
                 values_dict = st.session_state["state_history"].values
                 message_to_render = values_dict.get("messages", [])
 
+                # 跟踪当前打开的助手消息块
                 # Track current open assistant message block
                 current_assistant_block = None
 
+                # 状态快照消息列表
                 # StateSnapshot values messages list
                 for message_object in message_to_render:
+                    # 处理不同的消息类型
                     # Handle different message types
                     if isinstance(message_object, HumanMessage):
                         # Close any open assistant chat message block before starting a new user message
@@ -326,13 +364,15 @@ if selected_p:
 
                 _render_simulated_topology_data(st.session_state.get("state_history"))
 
+    # 仅在 show_iframe 为 True 时渲染 layout_col2 内容
     # Only render layout_col2 content when show_iframe is True
     if st.session_state.show_iframe:
         with layout_col2:
+            # 从选定的项目中提取 project_id
             # Extract project_id from the selected project
             project_id = selected_p[
                 1
-            ]  # selected_p is a tuple: (name, p_id, dev_count, link_count, status)
+            ]  # selected_p 是一个元组：(name, p_id, dev_count, link_count, status)
             # Build the topology iframe URL based on API version and URL mode
             iframe_url = build_topology_iframe_url(project_id)
 
@@ -357,20 +397,27 @@ if selected_p:
                 st.markdown(iframe_html, unsafe_allow_html=True)
 
     # st.divider()
+    # --- 聊天输入区域 ---
     # --- Chat Input Area ---
     if st.session_state.show_iframe:
+        # 显示拓扑时：右侧有两个按钮，需要更宽
         # When Show Topology: there are two buttons on the right, needs to be wider
+        # 左列较窄，中列适中，右列较宽
         # Left column is narrow, middle column is moderate, right column is wider
         col_ratio = [0.2, 0.6, 0.4]
     else:
+        # 隐藏拓扑时：右侧只有一个按钮
         # When Hide Topology: there is only one button on the right
+        # 左列较窄，中列较宽，右列适中
         # Left column is narrow, middle column is wide, right column is moderate
         col_ratio = [0.2, 0.7, 0.3]
 
     chat_input_left, chat_input_center, chat_input_right = st.columns(col_ratio)
 
     with chat_input_center:
+        # 基于开关配置聊天输入
         # Configure chat_input based on switch
+        # 从会话状态获取语音启用设置（从 .env 文件加载）
         # Get voice enabled setting from session_state (loaded from .env file)
         voice_enabled = st.session_state.get("VOICE", False)
         if voice_enabled:
@@ -386,28 +433,35 @@ if selected_p:
                 "Type your message here...",
                 # width=600
             )
+        # 处理输入
         # Handle input
         if prompt:
             user_text = ""
             if voice_enabled:
+                # 模式 A：prompt 是一个对象（包含 .text 和 .audio）
                 # Mode A: prompt is an object (containing .text and .audio)
                 if prompt.audio:
                     user_text = speech_to_text(prompt.audio)
+                # 如果语音未转换为文本，或用户直接输入
                 # If voice is not converted to text, or user directly types
                 if not user_text:
                     user_text = prompt.text
             else:
+                # 模式 B：prompt 直接是字符串
                 # Mode B: prompt is directly a string
                 user_text = prompt
+            # 3. 最终检查并运行
             # 3. Final check and run
             if not user_text or user_text.strip() == "":
                 st.stop()
 
             with history_container:
+                # 在聊天消息容器中显示用户消息
                 # Display user message in chat message container
                 with st.chat_message("user"):
                     st.markdown(user_text)
 
+            # 将临时选定的项目迁移到新会话的代理状态
             # Migrate temp selected project to agent state for new sessions
             if not selected_thread_id and st.session_state.get("temp_selected_project"):
                 temp_project = st.session_state["temp_selected_project"]
@@ -416,18 +470,25 @@ if selected_p:
                 # It will be cleared after rerun when selected_p is retrieved from agent state
 
             with history_container:
+                # 在聊天消息容器中显示助手响应
                 # Display assistant response in chat message container
                 with st.chat_message("assistant"):
                     active_text_placeholder = st.empty()
                     current_text_chunk = ""
+                    # 核心聚合状态：仅存储当前流式工具信息
                     # Core aggregation state: only stores currently streaming tool information
+                    # 结构：{'id': str, 'name': str, 'args_string': str} 或 None
                     # Structure: {'id': str, 'name': str, 'args_string': str} or None
                     current_tool_state = None
+                    # 用于消息控制的 TTS 本地开关
                     # TTS local switch for message control
                     tts_played = False
+                    # 初始化 audio_bytes 变量
                     # Initialize audio_bytes variable
                     audio_bytes = None
+                    # 流式传输代理响应
                     # Stream the agent response
+                    # 从代理流式获取响应块
                     for chunk in agent.stream(
                         {
                             "messages": [HumanMessage(content=user_text)],
@@ -435,6 +496,7 @@ if selected_p:
                         config=config,
                         stream_mode="messages",
                     ):
+                        # 处理每个消息块
                         for msg in chunk:
                             # with open('log.txt', "a", encoding='utf-8') as f:
                             #    f.write(f"{msg}\n\n")
@@ -586,12 +648,15 @@ if selected_p:
                                 active_text_placeholder = st.empty()
                                 current_text_chunk = ""
                                 tts_played = False
+                # 交互后，使用最新的状态快照更新会话状态
                 # After the interaction, update the session state with the latest StateSnapshot
                 state_history = agent.get_state(config)
+                # 避免在 state_history 为空时更新
                 # Avoid updating if state_history is empty
                 if not state_history[0]:
                     pass
                 else:
+                    # 更新会话状态
                     # Update session state
                     st.session_state["state_history"] = state_history
                     with history_container:
@@ -601,6 +666,7 @@ if selected_p:
                 #    f.write(f"{state_history}\n\n")
 
     with chat_input_right:
+        # 在右列中创建两个子列，按钮从左到右排列
         # Create two sub-columns in the right column, arrange buttons left and right
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
@@ -611,6 +677,8 @@ if selected_p:
                 else ":material/visibility_off:",
                 help="Show or hide the GNS3 project topology iframe",
             ):
+                # 切换 iframe 的可见性
+                # Toggle iframe visibility
                 st.session_state.show_iframe = not st.session_state.show_iframe
                 st.rerun()
 
@@ -625,6 +693,8 @@ if selected_p:
                     else ":material/device_hub:",
                     help="If the page is not displayed, please click me. Need to perform GNS3 web login once.",
                 ):
+                    # 切换 iframe 的 URL 模式（项目页面 vs 登录页面）
+                    # Toggle iframe URL mode (project page vs login page)
                     st.session_state.gns3_url_mode = (
                         "login"
                         if st.session_state.gns3_url_mode == "project"
@@ -633,4 +703,5 @@ if selected_p:
                     st.rerun()
 
     with chat_input_left:
+        # 左列为空布局
         st.empty()
