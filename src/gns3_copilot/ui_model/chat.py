@@ -373,6 +373,7 @@ if selected_p:
             project_id = selected_p[
                 1
             ]  # selected_p 是一个元组：(name, p_id, dev_count, link_count, status)
+            # 基于 API 版本和 URL 模式构建拓扑 iframe URL
             # Build the topology iframe URL based on API version and URL mode
             iframe_url = build_topology_iframe_url(project_id)
 
