@@ -1,4 +1,3 @@
-"""
 """GNS3 Copilot 应用配置管理器。
 
 Application Configuration Manager for GNS3 Copilot.
@@ -74,6 +73,7 @@ DEFAULT_CONFIG: dict[str, str] = {
     # UI 配置 | UI Configuration
     "CONTAINER_HEIGHT": "1200",  # 容器高度
     "ZOOM_SCALE_TOPOLOGY": "0.8",  # 拓扑缩放比例
+    "TOPOLOGY_DRY_RUN": "True",  # 拓扑生成 dry-run 模式（不调用 GNS3 写操作）
     # 其他设置 | Other Settings
     "LANGUAGE": "zh",  # 应用界面语言
     "TTS_HTTP_REFERER": "",  # TTS HTTP 参考来源

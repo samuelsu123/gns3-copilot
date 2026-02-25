@@ -91,6 +91,7 @@ CONFIG_MAP = {
     # UI Configuration
     "CONTAINER_HEIGHT": "CONTAINER_HEIGHT",
     "zoom_scale_topology": "ZOOM_SCALE_TOPOLOGY",
+    "TOPOLOGY_DRY_RUN": "TOPOLOGY_DRY_RUN",
     # Other Settings
     "LANGUAGE": "LANGUAGE",
     "TTS_HTTP_REFERER": "TTS_HTTP_REFERER",
@@ -167,8 +168,8 @@ def load_config() -> None:
             st.session_state[st_key] = config_value
             continue
 
-        # Special handling for VOICE (boolean)
-        if st_key == "VOICE":
+        # Special handling for boolean switches
+        if st_key in ("VOICE", "TOPOLOGY_DRY_RUN"):
             voice_str = str(config_value).lower().strip()
             if voice_str not in (
                 "true",
@@ -182,7 +183,9 @@ def load_config() -> None:
                 "",
             ):
                 logger.debug(
-                    "Invalid VOICE value: %s, setting to default 'false'", config_value
+                    "Invalid %s value: %s, setting to default 'false'",
+                    st_key,
+                    config_value,
                 )
                 voice_str = "false"
             is_enabled: bool = voice_str in ("true", "1", "yes", "on")

@@ -53,6 +53,84 @@ from gns3_copilot.utils import (
 
 logger = setup_logger("chat")
 
+
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    """Parse session/config value to bool."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _get_snapshot_values(snapshot: Any) -> dict[str, Any]:
+    """Extract state values from a LangGraph snapshot-like object."""
+    if snapshot is None:
+        return {}
+
+    values = getattr(snapshot, "values", None)
+    if isinstance(values, dict):
+        return values
+    if isinstance(snapshot, dict):
+        return snapshot
+    return {}
+
+
+def _render_simulated_topology_data(snapshot: Any) -> None:
+    """Render dry-run topology payload if available."""
+    values = _get_snapshot_values(snapshot)
+    simulated_topology = values.get("simulated_topology")
+
+    if (
+        not isinstance(simulated_topology, dict)
+        or simulated_topology.get("mode") != "dry_run"
+    ):
+        return
+
+    nodes = simulated_topology.get("nodes", [])
+    links = simulated_topology.get("links", [])
+    drawings = simulated_topology.get("drawings", [])
+    config_previews = simulated_topology.get("config_previews", [])
+
+    st.markdown(
+        """
+        <h4 style='text-align: left; font-size: 18px; font-weight: 700; margin-top: 18px;'>Generated Topology Data (Dry Run)</h4>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Topology write operations are simulated in memory only; no node/link/drawing is created on GNS3 server."
+    )
+
+    with st.expander("View generated topology JSON", expanded=True):
+        st.json(
+            {
+                "mode": "dry_run",
+                "project_id": simulated_topology.get("project_id"),
+                "project_name": simulated_topology.get("project_name"),
+                "stats": {
+                    "total_nodes": len(nodes),
+                    "total_links": len(links),
+                    "total_drawings": len(drawings),
+                    "total_config_previews": len(config_previews),
+                    "total_operations": len(simulated_topology.get("operation_log", [])),
+                },
+                "nodes": nodes,
+                "links": links,
+                "drawings": drawings,
+                "config_previews": config_previews,
+                "operation_log": simulated_topology.get("operation_log", []),
+            },
+            expanded=False,
+        )
+
+
 # Initialize session state for thread ID
 if "thread_id" not in st.session_state:
     # If thread_id is not in session_state, create and save a new one
@@ -103,6 +181,18 @@ if selected_thread_id:
 else:
     # New session: get from temp storage
     selected_p = st.session_state.get("temp_selected_project")
+
+dry_run_enabled = _parse_bool(st.session_state.get("TOPOLOGY_DRY_RUN", True), True)
+
+# In dry-run mode, allow a virtual project so GNS3 server is optional.
+# This avoids project list/create API dependency when users only want generated topology data.
+if dry_run_enabled and not selected_p:
+    dry_run_project = ("Dry Run Project", "dry-run-project-id", 0, 0, "opened")
+    if selected_thread_id:
+        agent.update_state(config, {"selected_project": dry_run_project})
+    else:
+        st.session_state["temp_selected_project"] = dry_run_project
+    selected_p = dry_run_project
 
 # --- Logic branch: If no project is selected, display project cards ---
 if not selected_p:
@@ -233,6 +323,8 @@ if selected_p:
                 # Close any remaining open assistant chat message block
                 if current_assistant_block is not None:
                     current_assistant_block.__exit__(None, None, None)
+
+                _render_simulated_topology_data(st.session_state.get("state_history"))
 
     # Only render layout_col2 content when show_iframe is True
     if st.session_state.show_iframe:
@@ -502,6 +594,8 @@ if selected_p:
                 else:
                     # Update session state
                     st.session_state["state_history"] = state_history
+                    with history_container:
+                        _render_simulated_topology_data(state_history)
                     # print(state_history)
                 # with open('state_history.txt', "a", encoding='utf-8') as f:
                 #    f.write(f"{state_history}\n\n")

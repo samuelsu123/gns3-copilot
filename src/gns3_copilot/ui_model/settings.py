@@ -96,6 +96,17 @@ with st.container(width=800, horizontal_alignment="center", vertical_alignment="
         if st.button("Check GNS3 API"):
             check_gns3_api()
 
+        st.checkbox(
+            "Dry-run Topology Generation (Do not call GNS3 topology write APIs)",
+            key="TOPOLOGY_DRY_RUN",
+            value=st.session_state.get("TOPOLOGY_DRY_RUN", True),
+            help=(
+                "When enabled, topology planning tools run in memory only. "
+                "GNS3 Copilot still executes the normal tool workflow, but it will "
+                "not create real nodes/links/drawings on the GNS3 server."
+            ),
+        )
+
     with st.expander("LLM Model Configuration", expanded=True):
         # Recommended models information
         st.success(

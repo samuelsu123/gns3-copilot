@@ -29,7 +29,7 @@ solution for GNS3 environments.
 
 import operator
 import sqlite3
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import streamlit as st
 from langchain.messages import AnyMessage, SystemMessage, ToolMessage
@@ -41,6 +41,13 @@ from typing_extensions import TypedDict
 from gns3_copilot.agent.model_factory import (
     create_base_model_with_tools,
     create_title_model,
+)
+from gns3_copilot.agent.topology_dry_run import (
+    DRY_RUN_TOOL_NAMES,
+    build_topology_reader_output,
+    execute_dry_run_tool,
+    initialize_simulated_topology,
+    is_topology_dry_run_enabled,
 )
 from gns3_copilot.gns3_client import GNS3TopologyTool
 from gns3_copilot.log_config import setup_logger
@@ -150,6 +157,68 @@ class MessagesState(TypedDict):
     # 存储 GNS3 拓扑信息
     topology_info: dict | None
 
+    # Store dry-run topology simulation state
+    # 存储 dry-run 拓扑模拟状态
+    simulated_topology: dict | None
+
+
+def _normalize_content_blocks_to_text(content: list[Any]) -> str:
+    """
+    Normalize non-OpenAI-compatible content blocks to plain text.
+
+    Some providers (or legacy checkpoints) may store message content as:
+    [{"text": "..."}] without OpenAI-required {"type": "..."} blocks.
+    OpenAI chat.completions rejects this payload, so we coerce it to text.
+    """
+    text_parts: list[str] = []
+
+    for block in content:
+        if isinstance(block, dict):
+            # Preserve human-readable text when available
+            if "text" in block and isinstance(block["text"], str):
+                text_parts.append(block["text"])
+                continue
+            if "content" in block and isinstance(block["content"], str):
+                text_parts.append(block["content"])
+                continue
+            text_parts.append(str(block))
+            continue
+
+        text_parts.append(str(block))
+
+    return "\n".join([part for part in text_parts if part])
+
+
+def _normalize_message_for_model(message: AnyMessage) -> AnyMessage:
+    """
+    Return a model-compatible message copy.
+
+    If content is a list of dict blocks without `type`, convert to plain text.
+    """
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return message
+
+    dict_blocks = [block for block in content if isinstance(block, dict)]
+    if not dict_blocks:
+        return message
+
+    all_blocks_have_type = all("type" in block for block in dict_blocks)
+    # Already OpenAI-compatible block structure
+    if all_blocks_have_type:
+        return message
+
+    normalized_text = _normalize_content_blocks_to_text(content)
+
+    # pydantic v2 style copy
+    if hasattr(message, "model_copy"):
+        return message.model_copy(update={"content": normalized_text})
+    # pydantic v1 style copy
+    if hasattr(message, "copy"):
+        return message.copy(update={"content": normalized_text})
+
+    return message
+
 
 # Define llm call node
 # 定义 LLM 调用节点
@@ -167,6 +236,8 @@ def llm_call(state: dict):
     # 构建上下文消息
     context_messages = []
     topology_info = None
+    dry_run_enabled = is_topology_dry_run_enabled()
+    simulated_topology = state.get("simulated_topology")
 
     if selected_p:
         # Convert tuple information to natural language to tell LLM which project user selected
@@ -181,45 +252,62 @@ def llm_call(state: dict):
         )
         logger.debug("Project info for LLM context: %s", project_info)
 
-        # Try to retrieve topology information
-        # 尝试获取拓扑信息
-        try:
-            topology_tool = GNS3TopologyTool()
-            topology = topology_tool._run(project_id=selected_p[1])
-
-            if topology and "error" not in topology:
-                topology_info = topology
-                logger.info(
-                    "Successfully retrieved topology for project: %s", selected_p[0]
+        if dry_run_enabled:
+            simulated_topology = initialize_simulated_topology(
+                selected_project=selected_p,
+                existing_topology=simulated_topology,
+            )
+            topology_info = build_topology_reader_output(simulated_topology)
+            topology_context = str(topology_info)
+            logger.debug("Dry-run topology context for LLM:\n%s", topology_context)
+            context_messages.append(
+                SystemMessage(
+                    content=f"Current Context: {project_info}\n\nTopology:\n{topology_context}"
                 )
+            )
+        else:
+            # Try to retrieve topology information
+            # 尝试获取拓扑信息
+            try:
+                topology_tool = GNS3TopologyTool()
+                topology = topology_tool._run(project_id=selected_p[1])
 
-                # Convert topology dict to string for LLM consumption
-                # 将拓扑字典转换为字符串供 LLM 使用
-                topology_context = str(topology)
-                logger.debug("Topology context for LLM:\n%s", topology_context)
-                context_messages.append(
-                    SystemMessage(
-                        content=f"Current Context: {project_info}\n\nTopology:\n{topology_context}"
+                if topology and "error" not in topology:
+                    topology_info = topology
+                    logger.info(
+                        "Successfully retrieved topology for project: %s", selected_p[0]
                     )
-                )
-            else:
-                logger.warning(
-                    "Failed to retrieve topology: %s",
-                    topology.get("error", "Unknown error"),
-                )
+
+                    # Convert topology dict to string for LLM consumption
+                    # 将拓扑字典转换为字符串供 LLM 使用
+                    topology_context = str(topology)
+                    logger.debug("Topology context for LLM:\n%s", topology_context)
+                    context_messages.append(
+                        SystemMessage(
+                            content=f"Current Context: {project_info}\n\nTopology:\n{topology_context}"
+                        )
+                    )
+                else:
+                    logger.warning(
+                        "Failed to retrieve topology: %s",
+                        topology.get("error", "Unknown error"),
+                    )
+                    context_messages.append(
+                        SystemMessage(content=f"Current Context: {project_info}")
+                    )
+            except Exception as e:
+                logger.warning("Error retrieving topology: %s", e)
                 context_messages.append(
                     SystemMessage(content=f"Current Context: {project_info}")
                 )
-        except Exception as e:
-            logger.warning("Error retrieving topology: %s", e)
-            context_messages.append(
-                SystemMessage(content=f"Current Context: {project_info}")
-            )
 
     # Merge message lists
     # 合并消息列表
+    normalized_messages = [
+        _normalize_message_for_model(message) for message in state["messages"]
+    ]
     full_messages = (
-        [SystemMessage(content=current_prompt)] + context_messages + state["messages"]
+        [SystemMessage(content=current_prompt)] + context_messages + normalized_messages
     )
     # print(full_messages)
 
@@ -229,11 +317,14 @@ def llm_call(state: dict):
     # 这确保 .env 中的配置更改立即生效
     model_with_tools = create_base_model_with_tools(tools)
 
-    return {
+    result: dict[str, Any] = {
         "messages": [model_with_tools.invoke(full_messages)],
         "llm_calls": state.get("llm_calls", 0) + 1,
         "topology_info": topology_info,
     }
+    if dry_run_enabled and simulated_topology is not None:
+        result["simulated_topology"] = simulated_topology
+    return result
 
 
 # Define generate title node
@@ -306,11 +397,48 @@ def tool_node(state: dict):
     """Performs the tool call. 执行工具调用。"""
 
     result = []
+    dry_run_enabled = is_topology_dry_run_enabled()
+    simulated_topology = state.get("simulated_topology")
+
+    if dry_run_enabled:
+        simulated_topology = initialize_simulated_topology(
+            selected_project=state.get("selected_project"),
+            existing_topology=simulated_topology,
+        )
+
     for tool_call in state["messages"][-1].tool_calls:
-        tool = tools_by_name[tool_call["name"]]
-        observation = tool.invoke(tool_call["args"])
-        result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
-    return {"messages": result}
+        tool_name = tool_call["name"]
+        tool_args = tool_call.get("args", {})
+
+        if dry_run_enabled and tool_name in DRY_RUN_TOOL_NAMES:
+            try:
+                observation, simulated_topology = execute_dry_run_tool(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    simulated_topology=simulated_topology,
+                )
+            except Exception as exc:
+                logger.exception("Dry-run tool execution failed for %s", tool_name)
+                observation = {
+                    "error": f"Dry-run execution failed for {tool_name}: {exc}"
+                }
+        else:
+            tool = tools_by_name[tool_name]
+            observation = tool.invoke(tool_args)
+
+        result.append(
+            ToolMessage(
+                content=observation,
+                tool_call_id=tool_call["id"],
+                name=tool_name,
+            )
+        )
+
+    response: dict[str, Any] = {"messages": result}
+    if dry_run_enabled and simulated_topology is not None:
+        response["simulated_topology"] = simulated_topology
+        response["topology_info"] = build_topology_reader_output(simulated_topology)
+    return response
 
 
 # Routing logic after the LLM node
