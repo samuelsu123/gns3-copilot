@@ -29,6 +29,9 @@ DRY_RUN_TOOL_NAMES = {
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 FALSY_VALUES = {"0", "false", "no", "off"}
+FORTIGATE_MGMT_PORT = "port1"
+FORTIGATE_BUSINESS_PORT_FALLBACK = "port2"
+FORTIGATE_REQUIRED_BLOCKS = ("ip", "route", "policy")
 
 
 DEFAULT_DRY_RUN_TEMPLATES: list[dict[str, str]] = [
@@ -389,6 +392,16 @@ def _dry_run_create_links(
 
         resolved_port1 = _resolve_port_name(node1, str(port1))
         resolved_port2 = _resolve_port_name(node2, str(port2))
+        resolved_port1 = _allocate_fortigate_business_port(
+            topology=topology,
+            node=node1,
+            requested_port=resolved_port1,
+        )
+        resolved_port2 = _allocate_fortigate_business_port(
+            topology=topology,
+            node=node2,
+            requested_port=resolved_port2,
+        )
 
         link_id = _next_identifier(topology, key="link", prefix="dry-link")
         link_info = {
@@ -590,14 +603,42 @@ def _dry_run_execute_config_commands(
         commands = item.get("config_commands", [])
         if not isinstance(commands, list):
             commands = []
+        is_fortigate = _is_fortigate_device(device_name=device_name, topology=topology)
+        validation_status = "success"
+        missing_requirements: list[str] = []
+        status = "success"
+        output = "Commands generated in dry-run mode (not executed on device)."
+        source = "manual_preview"
+
+        if is_fortigate:
+            source = "fortigate_prompt_driven"
+            validation_status, missing_requirements = _validate_fortigate_commands(
+                commands=commands
+            )
+            if validation_status == "incomplete":
+                status = "incomplete"
+                missing_text = ", ".join(missing_requirements) or "unknown"
+                output = (
+                    "FortiGate config preview is incomplete in dry-run mode. "
+                    f"Missing requirements: {missing_text}. "
+                    "Ask follow-up questions and regenerate complete config preview."
+                )
 
         preview = {
             "project_id": project_id or topology.get("project_id"),
             "device_name": device_name,
-            "status": "success",
+            "status": status,
+            "validation_status": validation_status,
+            "missing_requirements": missing_requirements,
+            "recommended_next_step": (
+                "ask_user_for_missing_requirements"
+                if status == "incomplete"
+                else "none"
+            ),
+            "source": source,
             "mode": "dry_run_preview_only",
             "config_commands": commands,
-            "output": "Commands generated in dry-run mode (not executed on device).",
+            "output": output,
         }
         preview_results.append(preview)
         topology["config_previews"].append(copy.deepcopy(preview))
@@ -613,6 +654,222 @@ def _dry_run_execute_config_commands(
     )
 
     return preview_results
+
+
+def _is_fortigate_device(device_name: str, topology: dict[str, Any]) -> bool:
+    lower_name = device_name.lower()
+    if "forti" in lower_name or "fgt" in lower_name:
+        return True
+
+    node = _find_node_by_name(topology, device_name)
+    if node is None:
+        return False
+    return _node_role(node) == "fortigate"
+
+
+def _normalize_config_commands(commands: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    for command in commands:
+        text = str(command).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _extract_edit_target(line: str) -> str | None:
+    match = re.match(r'^edit\s+"?([^"]+)"?$', line.strip(), flags=re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).strip().lower()
+
+
+def _extract_set_tokens(line: str, prefix: str) -> list[str]:
+    if not line.lower().startswith(prefix.lower()):
+        return []
+
+    payload = line[len(prefix) :].strip()
+    if not payload:
+        return []
+
+    tokens = [m.group(1) or m.group(2) for m in re.finditer(r'"([^"]+)"|(\S+)', payload)]
+    return [str(token).strip().lower() for token in tokens if str(token).strip()]
+
+
+def _analyze_fortigate_interface_block(commands: list[str]) -> tuple[bool, bool]:
+    in_block = False
+    current_port: str | None = None
+    business_ports_with_ip: set[str] = set()
+    mgmt_port_used = False
+
+    for raw_line in commands:
+        line = raw_line.lower()
+        if line == "config system interface":
+            in_block = True
+            current_port = None
+            continue
+        if not in_block:
+            continue
+        if line == "end":
+            break
+        if line == "next":
+            current_port = None
+            continue
+        if line.startswith("edit "):
+            current_port = _extract_edit_target(raw_line)
+            continue
+        if line.startswith("set ip ") and current_port:
+            if current_port == FORTIGATE_MGMT_PORT:
+                mgmt_port_used = True
+            else:
+                business_ports_with_ip.add(current_port)
+
+    has_required_ip = len(business_ports_with_ip) >= 2
+    return has_required_ip, mgmt_port_used
+
+
+def _analyze_fortigate_route_block(commands: list[str]) -> tuple[bool, bool]:
+    in_block = False
+    has_dst = False
+    has_device = False
+    device_port = ""
+    valid_entries = 0
+    mgmt_port_used = False
+
+    def finalize_entry() -> tuple[bool, bool]:
+        nonlocal has_dst, has_device, device_port, valid_entries, mgmt_port_used
+        if has_dst and has_device:
+            valid_entries += 1
+        if device_port == FORTIGATE_MGMT_PORT:
+            mgmt_port_used = True
+        has_dst = False
+        has_device = False
+        device_port = ""
+        return has_dst, has_device
+
+    for raw_line in commands:
+        line = raw_line.lower()
+        if line == "config router static":
+            in_block = True
+            has_dst = False
+            has_device = False
+            device_port = ""
+            continue
+        if not in_block:
+            continue
+        if line == "end":
+            finalize_entry()
+            break
+        if line.startswith("edit "):
+            finalize_entry()
+            continue
+        if line == "next":
+            finalize_entry()
+            continue
+        if line.startswith("set dst "):
+            has_dst = True
+            continue
+        if line.startswith("set device "):
+            tokens = _extract_set_tokens(raw_line, "set device ")
+            if tokens:
+                has_device = True
+                device_port = tokens[0]
+
+    return valid_entries >= 2, mgmt_port_used
+
+
+def _analyze_fortigate_policy_block(commands: list[str]) -> tuple[bool, bool]:
+    in_block = False
+    has_srcintf = False
+    has_dstintf = False
+    has_accept = False
+    entry_uses_mgmt = False
+    valid_entries = 0
+    mgmt_port_used = False
+
+    def finalize_entry() -> None:
+        nonlocal has_srcintf, has_dstintf, has_accept
+        nonlocal entry_uses_mgmt, valid_entries, mgmt_port_used
+        if has_srcintf and has_dstintf and has_accept:
+            valid_entries += 1
+        if entry_uses_mgmt:
+            mgmt_port_used = True
+        has_srcintf = False
+        has_dstintf = False
+        has_accept = False
+        entry_uses_mgmt = False
+
+    for raw_line in commands:
+        line = raw_line.lower()
+        if line == "config firewall policy":
+            in_block = True
+            has_srcintf = False
+            has_dstintf = False
+            has_accept = False
+            entry_uses_mgmt = False
+            continue
+        if not in_block:
+            continue
+        if line == "end":
+            finalize_entry()
+            break
+        if line.startswith("edit "):
+            finalize_entry()
+            continue
+        if line == "next":
+            finalize_entry()
+            continue
+        if line.startswith("set srcintf "):
+            tokens = _extract_set_tokens(raw_line, "set srcintf ")
+            has_srcintf = len(tokens) > 0
+            if FORTIGATE_MGMT_PORT in tokens:
+                entry_uses_mgmt = True
+            continue
+        if line.startswith("set dstintf "):
+            tokens = _extract_set_tokens(raw_line, "set dstintf ")
+            has_dstintf = len(tokens) > 0
+            if FORTIGATE_MGMT_PORT in tokens:
+                entry_uses_mgmt = True
+            continue
+        if line.startswith("set action "):
+            tokens = _extract_set_tokens(raw_line, "set action ")
+            has_accept = "accept" in tokens
+
+    return valid_entries >= 2, mgmt_port_used
+
+
+def _ordered_missing_requirements(missing: list[str]) -> list[str]:
+    order = list(FORTIGATE_REQUIRED_BLOCKS) + ["mgmt_port_reserved"]
+    ordered: list[str] = []
+    for item in order:
+        if item in missing:
+            ordered.append(item)
+    for item in missing:
+        if item not in ordered:
+            ordered.append(item)
+    return ordered
+
+
+def _validate_fortigate_commands(commands: list[Any]) -> tuple[str, list[str]]:
+    normalized_commands = _normalize_config_commands(commands)
+    missing: list[str] = []
+
+    has_ip, ip_uses_mgmt = _analyze_fortigate_interface_block(normalized_commands)
+    has_route, route_uses_mgmt = _analyze_fortigate_route_block(normalized_commands)
+    has_policy, policy_uses_mgmt = _analyze_fortigate_policy_block(normalized_commands)
+
+    if not has_ip:
+        missing.append("ip")
+    if not has_route:
+        missing.append("route")
+    if not has_policy:
+        missing.append("policy")
+    if ip_uses_mgmt or route_uses_mgmt or policy_uses_mgmt:
+        missing.append("mgmt_port_reserved")
+
+    ordered_missing = _ordered_missing_requirements(missing)
+    if ordered_missing:
+        return "incomplete", ordered_missing
+    return "success", []
 
 
 def _dry_run_execute_show_commands(
@@ -751,6 +1008,49 @@ def _has_port(node: dict[str, Any], port_name: str) -> bool:
         if str(port.get("name")) == port_name:
             return True
     return False
+
+
+def _used_ports_for_node(topology: dict[str, Any], node_id: str) -> set[str]:
+    used: set[str] = set()
+    for link in topology.get("links", []):
+        if str(link.get("node_id1")) == node_id:
+            used.add(str(link.get("port1", "")))
+        if str(link.get("node_id2")) == node_id:
+            used.add(str(link.get("port2", "")))
+    return used
+
+
+def _allocate_fortigate_business_port(
+    topology: dict[str, Any],
+    node: dict[str, Any],
+    requested_port: str,
+) -> str:
+    if _node_role(node) != "fortigate":
+        return requested_port
+
+    ports = [str(port.get("name")) for port in node.get("ports", []) if port.get("name")]
+    business_ports = [port for port in ports if port != FORTIGATE_MGMT_PORT]
+    if not business_ports:
+        return requested_port
+
+    used_ports = _used_ports_for_node(topology, str(node.get("node_id", "")))
+
+    preferred_port = requested_port
+    if preferred_port == FORTIGATE_MGMT_PORT or preferred_port not in business_ports:
+        preferred_port = (
+            FORTIGATE_BUSINESS_PORT_FALLBACK
+            if FORTIGATE_BUSINESS_PORT_FALLBACK in business_ports
+            else business_ports[0]
+        )
+
+    if preferred_port not in used_ports:
+        return preferred_port
+
+    for candidate in business_ports:
+        if candidate not in used_ports:
+            return candidate
+
+    return preferred_port
 
 
 def _infer_template_from_template_id(template_id: str) -> tuple[str, str]:

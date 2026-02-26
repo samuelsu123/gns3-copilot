@@ -217,6 +217,8 @@ def test_dry_run_placeholder_node_ids_are_resolved() -> None:
         simulated_topology=simulated_topology,
     )
     assert len([item for item in links_result if "error" not in item]) == 2
+    fortigate_ports = [item["port1"] for item in links_result if "error" not in item]
+    assert "port1" not in fortigate_ports
 
     start_nodes_input = {
         "project_id": "project-004",
@@ -257,8 +259,33 @@ def test_dry_run_config_tool_returns_preview_and_stores_it() -> None:
                 "device_name": "FGT-1",
                 "config_commands": [
                     "config system interface",
-                    "edit port1",
-                    "set ip 192.168.10.1/24",
+                    "edit port2",
+                    "set ip 10.10.1.1/24",
+                    "next",
+                    "edit port3",
+                    "set ip 10.10.2.1/24",
+                    "next",
+                    "end",
+                    "config router static",
+                    "edit 1",
+                    "set dst 10.10.1.0/24",
+                    "set device port2",
+                    "next",
+                    "edit 2",
+                    "set dst 10.10.2.0/24",
+                    "set device port3",
+                    "next",
+                    "end",
+                    "config firewall policy",
+                    "edit 1",
+                    "set srcintf port2",
+                    "set dstintf port3",
+                    "set action accept",
+                    "next",
+                    "edit 2",
+                    "set srcintf port3",
+                    "set dstintf port2",
+                    "set action accept",
                     "next",
                     "end",
                 ],
@@ -273,8 +300,110 @@ def test_dry_run_config_tool_returns_preview_and_stores_it() -> None:
 
     assert isinstance(result, list)
     assert result[0]["status"] == "success"
+    assert result[0]["validation_status"] == "success"
+    assert result[0]["missing_requirements"] == []
+    assert result[0]["source"] == "fortigate_prompt_driven"
     assert result[0]["mode"] == "dry_run_preview_only"
     assert len(simulated_topology["config_previews"]) == 1
 
     topology_output = build_topology_reader_output(simulated_topology)
     assert topology_output["stats"]["total_config_previews"] == 1
+
+
+def test_dry_run_config_tool_marks_incomplete_when_route_is_missing() -> None:
+    """FortiGate preview should be marked incomplete when route block is missing."""
+    simulated_topology = initialize_simulated_topology(
+        ("DemoProject", "project-006", 0, 0, "opened")
+    )
+    tool_input = {
+        "project_id": "project-006",
+        "device_configs": [
+            {
+                "device_name": "FGT-1",
+                "config_commands": [
+                    "config system interface",
+                    "edit port2",
+                    "set ip 10.10.1.1/24",
+                    "next",
+                    "edit port3",
+                    "set ip 10.10.2.1/24",
+                    "next",
+                    "end",
+                    "config firewall policy",
+                    "edit 1",
+                    "set srcintf port2",
+                    "set dstintf port3",
+                    "set action accept",
+                    "next",
+                    "edit 2",
+                    "set srcintf port3",
+                    "set dstintf port2",
+                    "set action accept",
+                    "next",
+                    "end",
+                ],
+            }
+        ],
+    }
+    result, _ = execute_dry_run_tool(
+        tool_name="execute_multiple_device_config_commands",
+        tool_args={"tool_input": json.dumps(tool_input)},
+        simulated_topology=simulated_topology,
+    )
+    assert result[0]["status"] == "incomplete"
+    assert result[0]["validation_status"] == "incomplete"
+    assert "route" in result[0]["missing_requirements"]
+
+
+def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used() -> None:
+    """FortiGate preview should fail when management port is used for business config."""
+    simulated_topology = initialize_simulated_topology(
+        ("DemoProject", "project-007", 0, 0, "opened")
+    )
+    tool_input = {
+        "project_id": "project-007",
+        "device_configs": [
+            {
+                "device_name": "FGT-1",
+                "config_commands": [
+                    "config system interface",
+                    "edit port1",
+                    "set ip 10.10.1.1/24",
+                    "next",
+                    "edit port3",
+                    "set ip 10.10.2.1/24",
+                    "next",
+                    "end",
+                    "config router static",
+                    "edit 1",
+                    "set dst 10.10.1.0/24",
+                    "set device port1",
+                    "next",
+                    "edit 2",
+                    "set dst 10.10.2.0/24",
+                    "set device port3",
+                    "next",
+                    "end",
+                    "config firewall policy",
+                    "edit 1",
+                    "set srcintf port1",
+                    "set dstintf port3",
+                    "set action accept",
+                    "next",
+                    "edit 2",
+                    "set srcintf port3",
+                    "set dstintf port1",
+                    "set action accept",
+                    "next",
+                    "end",
+                ],
+            }
+        ],
+    }
+    result, _ = execute_dry_run_tool(
+        tool_name="execute_multiple_device_config_commands",
+        tool_args={"tool_input": json.dumps(tool_input)},
+        simulated_topology=simulated_topology,
+    )
+    assert result[0]["status"] == "incomplete"
+    assert "mgmt_port_reserved" in result[0]["missing_requirements"]

@@ -29,6 +29,7 @@ solution for GNS3 environments.
 
 import operator
 import sqlite3
+import json
 from typing import Annotated, Any, Literal
 
 import streamlit as st
@@ -52,6 +53,10 @@ from gns3_copilot.agent.topology_dry_run import (
 from gns3_copilot.gns3_client import GNS3TopologyTool
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.prompts import TITLE_PROMPT, load_system_prompt
+from gns3_copilot.prompts.fortigate_config_prompt import (
+    build_fortigate_dry_run_prompt,
+    should_inject_fortigate_prompt,
+)
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
     ExecuteMultipleDeviceConfigCommands,
@@ -220,6 +225,88 @@ def _normalize_message_for_model(message: AnyMessage) -> AnyMessage:
     return message
 
 
+def _serialize_message_for_log(message: AnyMessage) -> dict[str, Any]:
+    """Convert LangChain message object to log-friendly dictionary."""
+    content = getattr(message, "content", "")
+    if isinstance(content, list):
+        content = _normalize_content_blocks_to_text(content)
+
+    payload: dict[str, Any] = {
+        "type": getattr(message, "type", message.__class__.__name__),
+        "content": content,
+    }
+
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        payload["tool_calls"] = tool_calls
+
+    name = getattr(message, "name", None)
+    if name:
+        payload["name"] = name
+
+    tool_call_id = getattr(message, "tool_call_id", None)
+    if tool_call_id:
+        payload["tool_call_id"] = tool_call_id
+
+    return payload
+
+
+def _localize_llm_log_tag(tag: str) -> str:
+    """Return Chinese tag for common LLM log channels."""
+    tag_mapping = {
+        "base_model": "主模型",
+        "title_model": "标题模型",
+    }
+    return tag_mapping.get(tag, tag)
+
+
+def _is_system_payload(payload: dict[str, Any]) -> bool:
+    """Check whether serialized payload is a system message (prompt)."""
+    return str(payload.get("type", "")).lower() == "system"
+
+
+def _log_llm_interaction(
+    tag: str,
+    inputs: list[AnyMessage],
+    output: AnyMessage,
+) -> None:
+    """Log each LLM interaction input and output in structured JSON format."""
+    input_payload = [_serialize_message_for_log(msg) for msg in inputs]
+    output_payload = _serialize_message_for_log(output)
+    input_payload_json = json.dumps(input_payload, ensure_ascii=False)
+    output_payload_json = json.dumps(output_payload, ensure_ascii=False)
+    localized_tag = _localize_llm_log_tag(tag)
+    input_payload_non_prompt = [
+        payload for payload in input_payload if not _is_system_payload(payload)
+    ]
+    input_payload_non_prompt_json = json.dumps(
+        input_payload_non_prompt, ensure_ascii=False
+    )
+
+    logger.info(
+        "[LLM_INTERACTION][%s][INPUT] %s",
+        tag,
+        input_payload_json,
+    )
+    if input_payload_non_prompt:
+        logger.info(
+            "[LLM交互][%s][输入] %s",
+            localized_tag,
+            input_payload_non_prompt_json,
+        )
+    logger.info(
+        "[LLM_INTERACTION][%s][OUTPUT] %s",
+        tag,
+        output_payload_json,
+    )
+    if not _is_system_payload(output_payload):
+        logger.info(
+            "[LLM交互][%s][输出] %s",
+            localized_tag,
+            output_payload_json,
+        )
+
+
 # Define llm call node
 # 定义 LLM 调用节点
 def llm_call(state: dict):
@@ -301,6 +388,20 @@ def llm_call(state: dict):
                     SystemMessage(content=f"Current Context: {project_info}")
                 )
 
+    if dry_run_enabled and should_inject_fortigate_prompt(
+        messages=state.get("messages", []),
+        topology_info=topology_info,
+        simulated_topology=simulated_topology,
+    ):
+        context_messages.append(
+            SystemMessage(
+                content=build_fortigate_dry_run_prompt(
+                    topology_info=topology_info,
+                    simulated_topology=simulated_topology,
+                )
+            )
+        )
+
     # Merge message lists
     # 合并消息列表
     normalized_messages = [
@@ -316,9 +417,15 @@ def llm_call(state: dict):
     # 为每次 LLM 调用创建新的带工具的模型
     # 这确保 .env 中的配置更改立即生效
     model_with_tools = create_base_model_with_tools(tools)
+    llm_response = model_with_tools.invoke(full_messages)
+    _log_llm_interaction(
+        tag="base_model",
+        inputs=full_messages,
+        output=llm_response,
+    )
 
     result: dict[str, Any] = {
-        "messages": [model_with_tools.invoke(full_messages)],
+        "messages": [llm_response],
         "llm_calls": state.get("llm_calls", 0) + 1,
         "topology_info": topology_info,
     }
@@ -357,11 +464,17 @@ def generate_title(state: MessagesState) -> dict:
             # Create fresh title model instance from current env configuration
             # 从当前 env 配置创建新的标题模型实例
             title_model = create_title_model()
-            response = title_model.invoke(
-                title_prompt_messages, config={"configurable": {"foo_temperature": 1.0}}
+            title_response = title_model.invoke(
+                title_prompt_messages,
+                config={"configurable": {"foo_temperature": 1.0}},
             )
-            logger.debug("generate_title: %s", response)
-            raw_content = response.content
+            _log_llm_interaction(
+                tag="title_model",
+                inputs=title_prompt_messages,
+                output=title_response,
+            )
+            logger.debug("generate_title: %s", title_response)
+            raw_content = title_response.content
             logger.debug("Raw title output from model: %s", raw_content)
 
             new_title = raw_content.strip()
