@@ -12,6 +12,9 @@ to take effect without restarting the application.
 from typing import Any
 
 from langchain.chat_models import init_chat_model
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import Runnable
 
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.utils import get_config
@@ -37,7 +40,7 @@ def _load_env_variables() -> dict[str, str]:
     }
 
 
-def create_base_model() -> Any:
+def create_base_model() -> Runnable[LanguageModelInput, AIMessage]:
     """
     Create a fresh base LLM model instance from current environment variables.
     从当前环境变量创建新的基础 LLM 模型实例。
@@ -48,8 +51,8 @@ def create_base_model() -> Any:
     允许配置更改立即生效。
 
     Returns:
-        Any: A new LLM model instance configured with current env vars.
-              The actual type depends on the provider (e.g., ChatOpenAI, etc.).
+        Runnable[LanguageModelInput, AIMessage]: A new chat model runnable
+              configured with current env vars.
              使用当前环境变量配置的新 LLM 模型实例。
              实际类型取决于提供者（例如 ChatOpenAI 等）。
 
@@ -96,7 +99,7 @@ def create_base_model() -> Any:
         raise RuntimeError(f"Failed to create base model: {e}") from e
 
 
-def create_title_model() -> Any:
+def create_title_model() -> Runnable[LanguageModelInput, AIMessage]:
     """
     Create a fresh title generation model instance.
     创建新的标题生成模型实例。
@@ -108,8 +111,8 @@ def create_title_model() -> Any:
     它使用与基础模型相同的配置，但使用更高的温度以获得更有创意的输出。
 
     Returns:
-        Any: A new LLM model instance for title generation.
-              The actual type depends on the provider.
+        Runnable[LanguageModelInput, AIMessage]: A new chat model runnable
+              for title generation.
              用于标题生成的新 LLM 模型实例。实际类型取决于提供者。
 
     Raises:
@@ -156,7 +159,7 @@ def create_title_model() -> Any:
 def create_model_with_tools(
     model: Any,
     tools: list[Any],
-) -> Any:
+) -> Runnable[LanguageModelInput, AIMessage]:
     """
     Bind tools to a model instance.
     将工具绑定到模型实例。
@@ -166,7 +169,8 @@ def create_model_with_tools(
         tools: List of tools to bind to the model. 要绑定到模型的工具列表。
 
     Returns:
-        Any: A model instance with tools bound (type varies by provider).
+        Runnable[LanguageModelInput, AIMessage]: A model runnable with tools bound
+             (exact runtime class varies by provider).
              绑定了工具的模型实例（类型因提供者而异）。
 
     Raises:
@@ -181,7 +185,7 @@ def create_model_with_tools(
         raise RuntimeError(f"Failed to bind tools to model: {e}") from e
 
 
-def create_note_organizer_model() -> Any:
+def create_note_organizer_model() -> Runnable[LanguageModelInput, AIMessage]:
     """
     Create a fresh model instance for note organization.
     创建新的笔记组织模型实例。
@@ -193,8 +197,8 @@ def create_note_organizer_model() -> Any:
     它使用与基础模型相同的配置，但使用更低的温度以获得更一致和可预测的输出。
 
     Returns:
-        Any: A new LLM model instance for note organization.
-              The actual type depends on the provider.
+        Runnable[LanguageModelInput, AIMessage]: A new chat model runnable
+              for note organization.
              用于笔记组织的新 LLM 模型实例。实际类型取决于提供者。
 
     Raises:
@@ -238,7 +242,9 @@ def create_note_organizer_model() -> Any:
         raise RuntimeError(f"Failed to create note organizer model: {e}") from e
 
 
-def create_base_model_with_tools(tools: list[Any]) -> Any:
+def create_base_model_with_tools(
+    tools: list[Any],
+) -> Runnable[LanguageModelInput, AIMessage]:
     """
     Create a fresh base model instance with tools bound.
     创建新的绑定了工具的基础模型实例。
@@ -251,7 +257,8 @@ def create_base_model_with_tools(tools: list[Any]) -> Any:
         tools: List of tools to bind to the model. 要绑定到模型的工具列表。
 
     Returns:
-        Any: A new model instance with tools bound (type varies by provider).
+        Runnable[LanguageModelInput, AIMessage]: A new model runnable with tools bound
+             (exact runtime class varies by provider).
              绑定了工具的新模型实例（类型因提供者而异）。
 
     Raises:
