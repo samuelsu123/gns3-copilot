@@ -322,6 +322,10 @@ def test_dry_run_config_tool_marks_incomplete_when_route_is_missing(monkeypatch)
         "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
         lambda: "hybrid_no_core_blocks",
     )
+    monkeypatch.setattr(
+        "gns3_copilot.agent.topology_dry_run.is_non_baseline_post_validation_enabled",
+        lambda: True,
+    )
 
     simulated_topology = initialize_simulated_topology(
         ("DemoProject", "project-006", 0, 0, "opened")
@@ -373,6 +377,10 @@ def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used(monkeypatch
     monkeypatch.setattr(
         "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
         lambda: "persona_only",
+    )
+    monkeypatch.setattr(
+        "gns3_copilot.agent.topology_dry_run.is_non_baseline_post_validation_enabled",
+        lambda: True,
     )
 
     simulated_topology = initialize_simulated_topology(
@@ -427,3 +435,48 @@ def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used(monkeypatch
     assert result[0]["source"] == "fortigate_persona_only"
     assert result[0]["fortigate_strategy"] == "persona_only"
     assert "mgmt_port_reserved" in result[0]["missing_requirements"]
+
+
+def test_dry_run_config_tool_skips_validation_for_non_baseline_by_default(
+    monkeypatch,
+) -> None:
+    """Non-baseline strategy should skip hard post-validation when switch is off."""
+    monkeypatch.setattr(
+        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
+        lambda: "hybrid_no_core_blocks",
+    )
+    monkeypatch.setattr(
+        "gns3_copilot.agent.topology_dry_run.is_non_baseline_post_validation_enabled",
+        lambda: False,
+    )
+
+    simulated_topology = initialize_simulated_topology(
+        ("DemoProject", "project-008", 0, 0, "opened")
+    )
+    tool_input = {
+        "project_id": "project-008",
+        "device_configs": [
+            {
+                "device_name": "FGT-1",
+                "config_commands": [
+                    "config system interface",
+                    "edit port2",
+                    "set ip 10.10.1.1/24",
+                    "next",
+                    "end",
+                ],
+            }
+        ],
+    }
+
+    result, _ = execute_dry_run_tool(
+        tool_name="execute_multiple_device_config_commands",
+        tool_args={"tool_input": json.dumps(tool_input)},
+        simulated_topology=simulated_topology,
+    )
+
+    assert result[0]["status"] == "success"
+    assert result[0]["validation_status"] == "not_validated"
+    assert result[0]["post_validation_enabled"] is False
+    assert result[0]["missing_requirements"] == []
+    assert result[0]["recommended_next_step"] == "none"

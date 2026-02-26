@@ -97,6 +97,7 @@ CONFIG_MAP = {
     "zoom_scale_topology": "ZOOM_SCALE_TOPOLOGY",
     "TOPOLOGY_DRY_RUN": "TOPOLOGY_DRY_RUN",
     "FORTIGATE_CONFIG_STRATEGY": "FORTIGATE_CONFIG_STRATEGY",
+    "FORTIGATE_NON_BASELINE_POST_VALIDATION": "FORTIGATE_NON_BASELINE_POST_VALIDATION",
     # Other Settings
     "LANGUAGE": "LANGUAGE",
     "TTS_HTTP_REFERER": "TTS_HTTP_REFERER",
@@ -174,7 +175,11 @@ def load_config() -> None:
             continue
 
         # Special handling for boolean switches
-        if st_key in ("VOICE", "TOPOLOGY_DRY_RUN"):
+        if st_key in (
+            "VOICE",
+            "TOPOLOGY_DRY_RUN",
+            "FORTIGATE_NON_BASELINE_POST_VALIDATION",
+        ):
             voice_str = str(config_value).lower().strip()
             if voice_str not in (
                 "true",

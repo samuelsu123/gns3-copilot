@@ -14,6 +14,9 @@ from .fortigate_config_prompt import (
 )
 
 FORTIGATE_CONFIG_STRATEGY_KEY = "FORTIGATE_CONFIG_STRATEGY"
+FORTIGATE_NON_BASELINE_POST_VALIDATION_KEY = (
+    "FORTIGATE_NON_BASELINE_POST_VALIDATION"
+)
 
 FORTIGATE_STRATEGY_PREDEFINED_RULES = "predefined_rules"
 FORTIGATE_STRATEGY_HYBRID_MIN_CONSTRAINTS = "hybrid_min_constraints"
@@ -28,6 +31,9 @@ FORTIGATE_CONFIG_STRATEGIES = (
 )
 
 DEFAULT_FORTIGATE_CONFIG_STRATEGY = FORTIGATE_STRATEGY_HYBRID_MIN_CONSTRAINTS
+
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
+FALSY_VALUES = {"0", "false", "no", "off"}
 
 FORTIGATE_STRATEGY_TO_SOURCE = {
     FORTIGATE_STRATEGY_PREDEFINED_RULES: "fortigate_predefined_rules",
@@ -65,6 +71,28 @@ def strategy_to_preview_source(strategy: str) -> str:
     )
 
 
+def _parse_bool(value: str | bool | None, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+
+    text = str(value).strip().lower()
+    if text in TRUTHY_VALUES:
+        return True
+    if text in FALSY_VALUES:
+        return False
+    return default
+
+
+def is_non_baseline_post_validation_enabled(
+    config_getter: Callable[[str, str | None], str] = get_config,
+) -> bool:
+    """Read non-baseline post-validation switch from app config."""
+    raw_value = config_getter(FORTIGATE_NON_BASELINE_POST_VALIDATION_KEY, "False")
+    return _parse_bool(raw_value, default=False)
+
+
 def _build_missing_requirements_text(simulated_topology: dict[str, Any] | None) -> str:
     missing_requirements = collect_incomplete_fortigate_requirements(simulated_topology)
     return ", ".join(missing_requirements) if missing_requirements else "none"
@@ -73,6 +101,7 @@ def _build_missing_requirements_text(simulated_topology: dict[str, Any] | None) 
 def _build_hybrid_prompt(
     simulated_topology: dict[str, Any] | None,
     require_core_blocks: bool,
+    post_validation_enabled: bool,
 ) -> str:
     missing_text = _build_missing_requirements_text(simulated_topology)
 
@@ -84,6 +113,14 @@ def _build_hybrid_prompt(
    - `config router static` (interface static routes with both `set dst` and `set device`)
    - `config firewall policy` (allow policy for traffic between the two PC networks)
 """
+
+    post_validation_instruction = (
+        "8. If tool output reports `validation_status=incomplete`, do not finalize. "
+        "Ask user for missing items and regenerate."
+        if post_validation_enabled
+        else "8. Hard post-validation is disabled for non-baseline strategies in current settings. "
+        "You MUST self-validate configuration completeness before finalizing."
+    )
 
     prompt = f"""
 ### FortiGate Dry-Run Hybrid Strategy
@@ -99,7 +136,7 @@ Workflow rules:
 4. Reserve `port1` for management only. Never use `port1` in business IP, static route device, or firewall policy interfaces.
 5. Use business interfaces from `port2`/`port3` (and above if needed).
 {core_constraints}7. If required info is missing, ask concise follow-up questions before claiming completion.
-8. If tool output reports `validation_status=incomplete`, do not finalize. Ask user for missing items and regenerate.
+{post_validation_instruction}
 
 Latest missing requirements reported by validator: {missing_text}
 """
@@ -108,8 +145,17 @@ Latest missing requirements reported by validator: {missing_text}
 
 def _build_persona_only_prompt(
     simulated_topology: dict[str, Any] | None,
+    post_validation_enabled: bool,
 ) -> str:
     missing_text = _build_missing_requirements_text(simulated_topology)
+
+    post_validation_instruction = (
+        "5. If tool output reports `validation_status=incomplete`, do not finalize. "
+        "Ask user for missing items and regenerate."
+        if post_validation_enabled
+        else "5. Hard post-validation is disabled for non-baseline strategies in current settings. "
+        "You MUST self-validate configuration completeness before finalizing."
+    )
 
     prompt = f"""
 ### FortiGate Dry-Run Persona-Only Strategy
@@ -122,7 +168,7 @@ Workflow rules:
 2. You MUST call `execute_multiple_device_config_commands` in dry-run mode to generate FortiGate config preview.
 3. `config_commands` MUST only contain native FortiGate CLI lines. No explanation text in config list.
 4. If required info is missing, ask concise follow-up questions before claiming completion.
-5. If tool output reports `validation_status=incomplete`, do not finalize. Ask user for missing items and regenerate.
+{post_validation_instruction}
 
 Latest missing requirements reported by validator: {missing_text}
 """
@@ -133,12 +179,18 @@ def build_fortigate_strategy_prompt(
     topology_info: dict[str, Any] | None = None,
     simulated_topology: dict[str, Any] | None = None,
     strategy: str | None = None,
+    non_baseline_post_validation: bool | None = None,
 ) -> str:
     """Build FortiGate prompt according to active strategy."""
     resolved_strategy = (
         get_fortigate_config_strategy()
         if strategy is None
         else normalize_fortigate_config_strategy(strategy)
+    )
+    resolved_non_baseline_post_validation = (
+        is_non_baseline_post_validation_enabled()
+        if non_baseline_post_validation is None
+        else bool(non_baseline_post_validation)
     )
 
     if resolved_strategy == FORTIGATE_STRATEGY_PREDEFINED_RULES:
@@ -150,10 +202,15 @@ def build_fortigate_strategy_prompt(
         return _build_hybrid_prompt(
             simulated_topology=simulated_topology,
             require_core_blocks=False,
+            post_validation_enabled=resolved_non_baseline_post_validation,
         )
     if resolved_strategy == FORTIGATE_STRATEGY_PERSONA_ONLY:
-        return _build_persona_only_prompt(simulated_topology=simulated_topology)
+        return _build_persona_only_prompt(
+            simulated_topology=simulated_topology,
+            post_validation_enabled=resolved_non_baseline_post_validation,
+        )
     return _build_hybrid_prompt(
         simulated_topology=simulated_topology,
         require_core_blocks=True,
+        post_validation_enabled=resolved_non_baseline_post_validation,
     )

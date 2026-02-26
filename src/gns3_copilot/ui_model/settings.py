@@ -145,6 +145,16 @@ with st.container(width=800, horizontal_alignment="center", vertical_alignment="
             ),
         )
 
+        st.checkbox(
+            "Enable FortiGate Post-Validation for Non-Baseline Strategies",
+            key="FORTIGATE_NON_BASELINE_POST_VALIDATION",
+            value=st.session_state.get("FORTIGATE_NON_BASELINE_POST_VALIDATION", False),
+            help=(
+                "When disabled (default), only predefined_rules uses hard post-validation. "
+                "When enabled, hybrid/persona strategies also use the same hard post-validation."
+            ),
+        )
+
     with st.expander("LLM Model Configuration", expanded=True):
         # Recommended models information
         st.success(

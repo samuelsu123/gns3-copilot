@@ -59,6 +59,7 @@ from gns3_copilot.prompts.fortigate_config_prompt import (
 from gns3_copilot.prompts.fortigate_config_strategy import (
     build_fortigate_strategy_prompt,
     get_fortigate_config_strategy,
+    is_non_baseline_post_validation_enabled,
 )
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
@@ -397,9 +398,11 @@ def llm_call(state: dict):
         simulated_topology=simulated_topology,
     ):
         fortigate_strategy = get_fortigate_config_strategy()
+        non_baseline_post_validation = is_non_baseline_post_validation_enabled()
         logger.info(
-            "Injecting FortiGate dry-run strategy prompt: strategy=%s",
+            "Injecting FortiGate dry-run strategy prompt: strategy=%s, non_baseline_post_validation=%s",
             fortigate_strategy,
+            non_baseline_post_validation,
         )
         context_messages.append(
             SystemMessage(
@@ -407,6 +410,7 @@ def llm_call(state: dict):
                     topology_info=topology_info,
                     simulated_topology=simulated_topology,
                     strategy=fortigate_strategy,
+                    non_baseline_post_validation=non_baseline_post_validation,
                 )
             )
         )

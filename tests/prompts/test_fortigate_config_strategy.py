@@ -10,6 +10,7 @@ from gns3_copilot.prompts.fortigate_config_strategy import (
     FORTIGATE_STRATEGY_PREDEFINED_RULES,
     build_fortigate_strategy_prompt,
     get_fortigate_config_strategy,
+    is_non_baseline_post_validation_enabled,
     normalize_fortigate_config_strategy,
     strategy_to_preview_source,
 )
@@ -26,6 +27,22 @@ def test_get_fortigate_config_strategy_reads_from_config_getter() -> None:
         config_getter=lambda _key, _default: FORTIGATE_STRATEGY_PERSONA_ONLY
     )
     assert strategy == FORTIGATE_STRATEGY_PERSONA_ONLY
+
+
+def test_non_baseline_post_validation_enabled_reads_from_config_getter() -> None:
+    """Switch getter should parse truthy/falsy values."""
+    assert (
+        is_non_baseline_post_validation_enabled(
+            config_getter=lambda _key, _default: "true"
+        )
+        is True
+    )
+    assert (
+        is_non_baseline_post_validation_enabled(
+            config_getter=lambda _key, _default: "false"
+        )
+        is False
+    )
 
 
 def test_strategy_to_preview_source_mapping() -> None:
@@ -67,3 +84,22 @@ def test_build_persona_only_prompt_has_persona_workflow_only() -> None:
     assert "Persona-Only Strategy" in prompt
     assert "execute_multiple_device_config_commands" in prompt
     assert "Reserve `port1` for management only" not in prompt
+
+
+def test_hybrid_prompt_uses_self_validation_text_when_post_validation_disabled() -> None:
+    """Hybrid prompt should ask LLM self-validation when hard post-validation is off."""
+    prompt = build_fortigate_strategy_prompt(
+        strategy=FORTIGATE_STRATEGY_HYBRID_MIN_CONSTRAINTS,
+        non_baseline_post_validation=False,
+    )
+    assert "Hard post-validation is disabled for non-baseline strategies" in prompt
+    assert "validation_status=incomplete" not in prompt
+
+
+def test_hybrid_prompt_uses_validation_status_hint_when_post_validation_enabled() -> None:
+    """Hybrid prompt should mention validation_status signal when switch is on."""
+    prompt = build_fortigate_strategy_prompt(
+        strategy=FORTIGATE_STRATEGY_HYBRID_MIN_CONSTRAINTS,
+        non_baseline_post_validation=True,
+    )
+    assert "validation_status=incomplete" in prompt

@@ -12,7 +12,9 @@ from typing import Any, Callable
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.prompts.fortigate_config_strategy import (
     FORTIGATE_CONFIG_STRATEGIES,
+    FORTIGATE_STRATEGY_PREDEFINED_RULES,
     get_fortigate_config_strategy,
+    is_non_baseline_post_validation_enabled,
     strategy_to_preview_source,
 )
 from gns3_copilot.utils import get_config
@@ -599,6 +601,7 @@ def _dry_run_execute_config_commands(
 
     preview_results: list[dict[str, Any]] = []
     active_strategy = get_fortigate_config_strategy()
+    non_baseline_post_validation_enabled = is_non_baseline_post_validation_enabled()
 
     for item in device_configs:
         if not isinstance(item, dict):
@@ -616,20 +619,32 @@ def _dry_run_execute_config_commands(
         output = "Commands generated in dry-run mode (not executed on device)."
         source = "manual_preview"
         fortigate_strategy = "not_applicable"
+        post_validation_enabled = False
 
         if is_fortigate:
             fortigate_strategy = active_strategy
             source = strategy_to_preview_source(active_strategy)
-            validation_status, missing_requirements = _validate_fortigate_commands(
-                commands=commands
+            post_validation_enabled = (
+                active_strategy == FORTIGATE_STRATEGY_PREDEFINED_RULES
+                or non_baseline_post_validation_enabled
             )
-            if validation_status == "incomplete":
-                status = "incomplete"
-                missing_text = ", ".join(missing_requirements) or "unknown"
+            if post_validation_enabled:
+                validation_status, missing_requirements = _validate_fortigate_commands(
+                    commands=commands
+                )
+                if validation_status == "incomplete":
+                    status = "incomplete"
+                    missing_text = ", ".join(missing_requirements) or "unknown"
+                    output = (
+                        "FortiGate config preview is incomplete in dry-run mode. "
+                        f"Missing requirements: {missing_text}. "
+                        "Ask follow-up questions and regenerate complete config preview."
+                    )
+            else:
+                validation_status = "not_validated"
                 output = (
-                    "FortiGate config preview is incomplete in dry-run mode. "
-                    f"Missing requirements: {missing_text}. "
-                    "Ask follow-up questions and regenerate complete config preview."
+                    "Commands generated in dry-run mode (not executed on device). "
+                    "FortiGate hard post-validation is disabled for non-baseline strategy."
                 )
 
         preview = {
@@ -645,6 +660,7 @@ def _dry_run_execute_config_commands(
             ),
             "source": source,
             "fortigate_strategy": fortigate_strategy,
+            "post_validation_enabled": post_validation_enabled,
             "mode": "dry_run_preview_only",
             "config_commands": commands,
             "output": output,
@@ -659,6 +675,7 @@ def _dry_run_execute_config_commands(
                         "strategy": fortigate_strategy,
                         "source": source,
                         "device_name": device_name,
+                        "post_validation_enabled": post_validation_enabled,
                         "validation_status": validation_status,
                         "missing_requirements": missing_requirements,
                         "recommended_next_step": preview["recommended_next_step"],
@@ -683,6 +700,11 @@ def _dry_run_execute_config_commands(
             for item in fortigate_previews
             if str(item.get("validation_status", "")).lower() == "success"
         )
+        not_validated_count = sum(
+            1
+            for item in fortigate_previews
+            if str(item.get("validation_status", "")).lower() == "not_validated"
+        )
         first_success_turn: int | None = None
         for index, item in enumerate(fortigate_previews, start=1):
             if str(item.get("validation_status", "")).lower() == "success":
@@ -694,8 +716,10 @@ def _dry_run_execute_config_commands(
             json.dumps(
                 {
                     "strategy": active_strategy,
+                    "non_baseline_post_validation_enabled": non_baseline_post_validation_enabled,
                     "incomplete_count": incomplete_count,
                     "success_count": success_count,
+                    "not_validated_count": not_validated_count,
                     "first_success_turn": first_success_turn,
                 },
                 ensure_ascii=False,
