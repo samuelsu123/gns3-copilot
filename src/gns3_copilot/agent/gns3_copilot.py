@@ -29,11 +29,11 @@ solution for GNS3 environments.
 
 import operator
 import sqlite3
-import json
 from typing import Annotated, Any, Literal
 
 import streamlit as st
 from langchain.messages import AnyMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.managed.is_last_step import RemainingSteps
@@ -43,6 +43,7 @@ from gns3_copilot.agent.model_factory import (
     create_base_model_with_tools,
     create_title_model,
 )
+from gns3_copilot.agent.prompt_trace import append_llm_trace_round
 from gns3_copilot.agent.topology_dry_run import (
     DRY_RUN_TOOL_NAMES,
     build_topology_reader_output,
@@ -255,65 +256,63 @@ def _serialize_message_for_log(message: AnyMessage) -> dict[str, Any]:
     return payload
 
 
-def _localize_llm_log_tag(tag: str) -> str:
-    """Return Chinese tag for common LLM log channels."""
-    tag_mapping = {
-        "base_model": "主模型",
-        "title_model": "标题模型",
-    }
-    return tag_mapping.get(tag, tag)
+def _extract_trace_context(config: Any) -> tuple[str | None, str | None]:
+    """Extract thread_id and trace_request_id from LangGraph config."""
+    if not isinstance(config, dict):
+        return None, None
 
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict):
+        return None, None
 
-def _is_system_payload(payload: dict[str, Any]) -> bool:
-    """Check whether serialized payload is a system message (prompt)."""
-    return str(payload.get("type", "")).lower() == "system"
+    thread_id = configurable.get("thread_id")
+    request_id = configurable.get("trace_request_id")
+
+    return (
+        str(thread_id) if thread_id else None,
+        str(request_id) if request_id else None,
+    )
 
 
 def _log_llm_interaction(
     tag: str,
     inputs: list[AnyMessage],
     output: AnyMessage,
+    config: RunnableConfig | None = None,
 ) -> None:
-    """Log each LLM interaction input and output in structured JSON format."""
+    """Write one readable LLM round into prompt_trace and emit concise summary log."""
     input_payload = [_serialize_message_for_log(msg) for msg in inputs]
     output_payload = _serialize_message_for_log(output)
-    input_payload_json = json.dumps(input_payload, ensure_ascii=False)
-    output_payload_json = json.dumps(output_payload, ensure_ascii=False)
-    localized_tag = _localize_llm_log_tag(tag)
-    input_payload_non_prompt = [
-        payload for payload in input_payload if not _is_system_payload(payload)
-    ]
-    input_payload_non_prompt_json = json.dumps(
-        input_payload_non_prompt, ensure_ascii=False
-    )
+    thread_id, request_id = _extract_trace_context(config)
 
-    logger.info(
-        "[LLM_INTERACTION][%s][INPUT] %s",
-        tag,
-        input_payload_json,
-    )
-    if input_payload_non_prompt:
+    if not thread_id or not request_id:
         logger.info(
-            "[LLM交互][%s][输入] %s",
-            localized_tag,
-            input_payload_non_prompt_json,
+            "[LLM_TRACE][%s] skipped: missing thread_id/trace_request_id", tag
         )
-    logger.info(
-        "[LLM_INTERACTION][%s][OUTPUT] %s",
-        tag,
-        output_payload_json,
-    )
-    if not _is_system_payload(output_payload):
+        return
+
+    try:
+        trace_info = append_llm_trace_round(
+            thread_id=thread_id,
+            request_id=request_id,
+            model_tag=tag,
+            input_payload=input_payload,
+            output_payload=output_payload,
+        )
         logger.info(
-            "[LLM交互][%s][输出] %s",
-            localized_tag,
-            output_payload_json,
+            "[LLM_TRACE][%s] request=%s round=%s file=%s",
+            tag,
+            trace_info["request_number"],
+            trace_info["round_number"],
+            trace_info["file_path"],
         )
+    except Exception as exc:
+        logger.warning("[LLM_TRACE][%s] write failed: %s", tag, exc)
 
 
 # Define llm call node
 # 定义 LLM 调用节点
-def llm_call(state: dict):
+def llm_call(state: dict, config: RunnableConfig | None = None):
     """LLM decides whether to call a tool or not. LLM 决定是否调用工具。"""
 
     current_prompt = load_system_prompt()
@@ -435,6 +434,7 @@ def llm_call(state: dict):
         tag="base_model",
         inputs=full_messages,
         output=llm_response,
+        config=config,
     )
 
     result: dict[str, Any] = {
@@ -449,7 +449,10 @@ def llm_call(state: dict):
 
 # Define generate title node
 # 定义生成标题节点
-def generate_title(state: MessagesState) -> dict:
+def generate_title(
+    state: MessagesState,
+    config: RunnableConfig | None = None,
+) -> dict:
     """
     Generate a conversation title using a lightweight assistant LLM (title_model).
     This node is only executed when no title has been set yet (first round only).
@@ -485,6 +488,7 @@ def generate_title(state: MessagesState) -> dict:
                 tag="title_model",
                 inputs=title_prompt_messages,
                 output=title_response,
+                config=config,
             )
             logger.debug("generate_title: %s", title_response)
             raw_content = title_response.content
