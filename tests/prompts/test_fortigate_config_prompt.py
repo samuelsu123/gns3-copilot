@@ -69,6 +69,23 @@ def test_collect_incomplete_fortigate_requirements_deduplicates_items() -> None:
     assert missing == ["route", "policy", "ip"]
 
 
+def test_collect_incomplete_fortigate_requirements_supports_new_strategy_source() -> None:
+    """Collector should handle new strategy-based preview source and strategy tag."""
+    simulated_topology = {
+        "config_previews": [
+            {
+                "device_name": "Edge-FW",
+                "source": "fortigate_hybrid_no_core_blocks",
+                "fortigate_strategy": "hybrid_no_core_blocks",
+                "validation_status": "incomplete",
+                "missing_requirements": ["ip", "route"],
+            }
+        ]
+    }
+    missing = collect_incomplete_fortigate_requirements(simulated_topology)
+    assert missing == ["ip", "route"]
+
+
 def test_build_fortigate_dry_run_prompt_contains_required_instructions() -> None:
     """Generated prompt must include core FortiGate dry-run requirements."""
     simulated_topology = {

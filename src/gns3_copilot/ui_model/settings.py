@@ -17,6 +17,10 @@ Key Features:
 import streamlit as st
 
 from gns3_copilot.log_config import setup_logger
+from gns3_copilot.prompts.fortigate_config_strategy import (
+    DEFAULT_FORTIGATE_CONFIG_STRATEGY,
+    FORTIGATE_STRATEGY_HYBRID_MIN_CONSTRAINTS,
+)
 from gns3_copilot.ui_model.utils import (
     check_gns3_api,
     get_all_providers,
@@ -26,6 +30,19 @@ from gns3_copilot.ui_model.utils import (
 )
 
 logger = setup_logger("settings")
+
+FORTIGATE_STRATEGY_OPTIONS = [
+    "predefined_rules",
+    "hybrid_min_constraints",
+    "hybrid_no_core_blocks",
+    "persona_only",
+]
+FORTIGATE_STRATEGY_LABELS = {
+    "predefined_rules": "Predefined Rules (Baseline)",
+    "hybrid_min_constraints": "Hybrid + Core Blocks (ip/route/policy)",
+    "hybrid_no_core_blocks": "Hybrid without Core Blocks",
+    "persona_only": "Persona Only",
+}
 
 
 # Streamlit UI
@@ -104,6 +121,27 @@ with st.container(width=800, horizontal_alignment="center", vertical_alignment="
                 "When enabled, topology planning tools run in memory only. "
                 "GNS3 Copilot still executes the normal tool workflow, but it will "
                 "not create real nodes/links/drawings on the GNS3 server."
+            ),
+        )
+
+        current_strategy = str(
+            st.session_state.get(
+                "FORTIGATE_CONFIG_STRATEGY",
+                DEFAULT_FORTIGATE_CONFIG_STRATEGY,
+            )
+        ).strip().lower()
+        if current_strategy not in FORTIGATE_STRATEGY_OPTIONS:
+            current_strategy = FORTIGATE_STRATEGY_HYBRID_MIN_CONSTRAINTS
+
+        st.selectbox(
+            "FortiGate Dry-run Strategy",
+            FORTIGATE_STRATEGY_OPTIONS,
+            index=FORTIGATE_STRATEGY_OPTIONS.index(current_strategy),
+            key="FORTIGATE_CONFIG_STRATEGY",
+            format_func=lambda item: FORTIGATE_STRATEGY_LABELS.get(item, item),
+            help=(
+                "Controls FortiGate prompt strategy in TOPOLOGY_DRY_RUN mode: "
+                "predefined baseline, hybrid with/without core block rule, or persona only."
             ),
         )
 

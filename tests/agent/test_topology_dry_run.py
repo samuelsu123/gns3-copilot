@@ -246,8 +246,13 @@ def test_build_topology_reader_output_shape() -> None:
     assert "stats" in topology_output
 
 
-def test_dry_run_config_tool_returns_preview_and_stores_it() -> None:
+def test_dry_run_config_tool_returns_preview_and_stores_it(monkeypatch) -> None:
     """Config tool should return preview output and persist preview entries."""
+    monkeypatch.setattr(
+        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
+        lambda: "predefined_rules",
+    )
+
     simulated_topology = initialize_simulated_topology(
         ("DemoProject", "project-005", 0, 0, "opened")
     )
@@ -302,7 +307,8 @@ def test_dry_run_config_tool_returns_preview_and_stores_it() -> None:
     assert result[0]["status"] == "success"
     assert result[0]["validation_status"] == "success"
     assert result[0]["missing_requirements"] == []
-    assert result[0]["source"] == "fortigate_prompt_driven"
+    assert result[0]["source"] == "fortigate_predefined_rules"
+    assert result[0]["fortigate_strategy"] == "predefined_rules"
     assert result[0]["mode"] == "dry_run_preview_only"
     assert len(simulated_topology["config_previews"]) == 1
 
@@ -310,8 +316,13 @@ def test_dry_run_config_tool_returns_preview_and_stores_it() -> None:
     assert topology_output["stats"]["total_config_previews"] == 1
 
 
-def test_dry_run_config_tool_marks_incomplete_when_route_is_missing() -> None:
+def test_dry_run_config_tool_marks_incomplete_when_route_is_missing(monkeypatch) -> None:
     """FortiGate preview should be marked incomplete when route block is missing."""
+    monkeypatch.setattr(
+        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
+        lambda: "hybrid_no_core_blocks",
+    )
+
     simulated_topology = initialize_simulated_topology(
         ("DemoProject", "project-006", 0, 0, "opened")
     )
@@ -352,11 +363,18 @@ def test_dry_run_config_tool_marks_incomplete_when_route_is_missing() -> None:
     )
     assert result[0]["status"] == "incomplete"
     assert result[0]["validation_status"] == "incomplete"
+    assert result[0]["source"] == "fortigate_hybrid_no_core_blocks"
+    assert result[0]["fortigate_strategy"] == "hybrid_no_core_blocks"
     assert "route" in result[0]["missing_requirements"]
 
 
-def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used() -> None:
+def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used(monkeypatch) -> None:
     """FortiGate preview should fail when management port is used for business config."""
+    monkeypatch.setattr(
+        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
+        lambda: "persona_only",
+    )
+
     simulated_topology = initialize_simulated_topology(
         ("DemoProject", "project-007", 0, 0, "opened")
     )
@@ -406,4 +424,6 @@ def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used() -> None:
         simulated_topology=simulated_topology,
     )
     assert result[0]["status"] == "incomplete"
+    assert result[0]["source"] == "fortigate_persona_only"
+    assert result[0]["fortigate_strategy"] == "persona_only"
     assert "mgmt_port_reserved" in result[0]["missing_requirements"]

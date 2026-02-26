@@ -10,6 +10,11 @@ import re
 from typing import Any, Callable
 
 from gns3_copilot.log_config import setup_logger
+from gns3_copilot.prompts.fortigate_config_strategy import (
+    FORTIGATE_CONFIG_STRATEGIES,
+    get_fortigate_config_strategy,
+    strategy_to_preview_source,
+)
 from gns3_copilot.utils import get_config
 
 logger = setup_logger("topology_dry_run")
@@ -593,6 +598,7 @@ def _dry_run_execute_config_commands(
         return [{"error": "device_configs must be a non-empty array"}]
 
     preview_results: list[dict[str, Any]] = []
+    active_strategy = get_fortigate_config_strategy()
 
     for item in device_configs:
         if not isinstance(item, dict):
@@ -609,9 +615,11 @@ def _dry_run_execute_config_commands(
         status = "success"
         output = "Commands generated in dry-run mode (not executed on device)."
         source = "manual_preview"
+        fortigate_strategy = "not_applicable"
 
         if is_fortigate:
-            source = "fortigate_prompt_driven"
+            fortigate_strategy = active_strategy
+            source = strategy_to_preview_source(active_strategy)
             validation_status, missing_requirements = _validate_fortigate_commands(
                 commands=commands
             )
@@ -636,12 +644,63 @@ def _dry_run_execute_config_commands(
                 else "none"
             ),
             "source": source,
+            "fortigate_strategy": fortigate_strategy,
             "mode": "dry_run_preview_only",
             "config_commands": commands,
             "output": output,
         }
         preview_results.append(preview)
         topology["config_previews"].append(copy.deepcopy(preview))
+        if is_fortigate:
+            logger.info(
+                "[FORTIGATE_DRY_RUN_PREVIEW] %s",
+                json.dumps(
+                    {
+                        "strategy": fortigate_strategy,
+                        "source": source,
+                        "device_name": device_name,
+                        "validation_status": validation_status,
+                        "missing_requirements": missing_requirements,
+                        "recommended_next_step": preview["recommended_next_step"],
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+    fortigate_previews = [
+        item
+        for item in topology.get("config_previews", [])
+        if isinstance(item, dict) and _is_fortigate_preview(item)
+    ]
+    if fortigate_previews:
+        incomplete_count = sum(
+            1
+            for item in fortigate_previews
+            if str(item.get("validation_status", "")).lower() == "incomplete"
+        )
+        success_count = sum(
+            1
+            for item in fortigate_previews
+            if str(item.get("validation_status", "")).lower() == "success"
+        )
+        first_success_turn: int | None = None
+        for index, item in enumerate(fortigate_previews, start=1):
+            if str(item.get("validation_status", "")).lower() == "success":
+                first_success_turn = index
+                break
+
+        logger.info(
+            "[FORTIGATE_DRY_RUN_SUMMARY] %s",
+            json.dumps(
+                {
+                    "strategy": active_strategy,
+                    "incomplete_count": incomplete_count,
+                    "success_count": success_count,
+                    "first_success_turn": first_success_turn,
+                },
+                ensure_ascii=False,
+            ),
+        )
 
     _append_operation(
         topology=topology,
@@ -665,6 +724,18 @@ def _is_fortigate_device(device_name: str, topology: dict[str, Any]) -> bool:
     if node is None:
         return False
     return _node_role(node) == "fortigate"
+
+
+def _is_fortigate_preview(item: dict[str, Any]) -> bool:
+    source = str(item.get("source", "")).lower()
+    strategy = str(item.get("fortigate_strategy", "")).lower()
+    device_name = str(item.get("device_name", "")).lower()
+    return (
+        "forti" in device_name
+        or "fgt" in device_name
+        or source.startswith("fortigate_")
+        or strategy in FORTIGATE_CONFIG_STRATEGIES
+    )
 
 
 def _normalize_config_commands(commands: list[Any]) -> list[str]:

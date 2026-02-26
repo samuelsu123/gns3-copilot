@@ -14,6 +14,19 @@ FORTIGATE_KEYWORDS = (
 )
 
 REQUIRED_FORTIGATE_BLOCKS = ("ip", "route", "policy")
+FORTIGATE_PREVIEW_SOURCES = {
+    "fortigate_prompt_driven",
+    "fortigate_predefined_rules",
+    "fortigate_hybrid_min_constraints",
+    "fortigate_hybrid_no_core_blocks",
+    "fortigate_persona_only",
+}
+FORTIGATE_PREVIEW_STRATEGIES = {
+    "predefined_rules",
+    "hybrid_min_constraints",
+    "hybrid_no_core_blocks",
+    "persona_only",
+}
 
 
 def _stringify_message_content(content: Any) -> str:
@@ -110,12 +123,14 @@ def collect_incomplete_fortigate_requirements(
 
         device_name = str(item.get("device_name", "")).lower()
         source = str(item.get("source", "")).lower()
+        strategy = str(item.get("fortigate_strategy", "")).lower()
         status = str(item.get("validation_status", "")).lower()
 
         is_fortigate_preview = (
             "forti" in device_name
             or "fgt" in device_name
-            or source == "fortigate_prompt_driven"
+            or source in FORTIGATE_PREVIEW_SOURCES
+            or strategy in FORTIGATE_PREVIEW_STRATEGIES
         )
         if not is_fortigate_preview:
             continue

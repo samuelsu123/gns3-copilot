@@ -54,8 +54,11 @@ from gns3_copilot.gns3_client import GNS3TopologyTool
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.prompts import TITLE_PROMPT, load_system_prompt
 from gns3_copilot.prompts.fortigate_config_prompt import (
-    build_fortigate_dry_run_prompt,
     should_inject_fortigate_prompt,
+)
+from gns3_copilot.prompts.fortigate_config_strategy import (
+    build_fortigate_strategy_prompt,
+    get_fortigate_config_strategy,
 )
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
@@ -393,11 +396,17 @@ def llm_call(state: dict):
         topology_info=topology_info,
         simulated_topology=simulated_topology,
     ):
+        fortigate_strategy = get_fortigate_config_strategy()
+        logger.info(
+            "Injecting FortiGate dry-run strategy prompt: strategy=%s",
+            fortigate_strategy,
+        )
         context_messages.append(
             SystemMessage(
-                content=build_fortigate_dry_run_prompt(
+                content=build_fortigate_strategy_prompt(
                     topology_info=topology_info,
                     simulated_topology=simulated_topology,
+                    strategy=fortigate_strategy,
                 )
             )
         )
