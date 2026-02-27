@@ -309,3 +309,44 @@ def end_trace_request(
             "file_path": str(file_path),
             "status": normalized_status,
         }
+
+
+def append_fortigate_config_trace(
+    thread_id: str,
+    request_id: str,
+    config_text: str,
+    trace_root: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """
+    Append pure FortiGate configuration text inside the current request block.
+    """
+    if not thread_id or not request_id:
+        return None
+
+    normalized = str(config_text).strip()
+    if not normalized:
+        return None
+
+    with _TRACE_LOCK:
+        key = (thread_id, request_id)
+        state = _REQUEST_STATE.get(key)
+        if state is None:
+            return None
+
+        file_path = Path(state["file_path"])
+        if trace_root is not None:
+            file_path = _session_file_path(thread_id=thread_id, trace_root=trace_root)
+
+        block = [
+            "### FortiGate Config",
+            _fenced_text(normalized, "fortios"),
+            "",
+        ]
+        with file_path.open("a", encoding="utf-8") as file:
+            file.write("\n".join(block))
+
+        return {
+            "request_number": state["request_number"],
+            "round_number": state["round_number"],
+            "file_path": str(file_path),
+        }

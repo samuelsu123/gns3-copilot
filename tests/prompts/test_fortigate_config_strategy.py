@@ -79,11 +79,14 @@ def test_build_hybrid_without_core_blocks_prompt_excludes_constraint() -> None:
 
 
 def test_build_persona_only_prompt_has_persona_workflow_only() -> None:
-    """Persona-only strategy should keep workflow rules without core constraints."""
+    """Persona-only strategy should include FortiGate safety and completeness rules."""
     prompt = build_fortigate_strategy_prompt(strategy=FORTIGATE_STRATEGY_PERSONA_ONLY)
     assert "Persona-Only Strategy" in prompt
     assert "execute_multiple_device_config_commands" in prompt
-    assert "Reserve `port1` for management only" not in prompt
+    assert "Reserve `port1` for management only" in prompt
+    assert "core blocks: ip/route/policy" in prompt
+    assert "validator signals are audit-only" in prompt
+    assert "Latest missing requirements reported by validator" not in prompt
 
 
 def test_hybrid_prompt_uses_self_validation_text_when_post_validation_disabled() -> None:

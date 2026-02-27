@@ -27,12 +27,13 @@ solution for GNS3 environments.
 助手与各种工具集成，为 GNS3 环境提供完整的网络自动化解决方案。
 """
 
+import json
 import operator
 import sqlite3
 from typing import Annotated, Any, Literal
 
 import streamlit as st
-from langchain.messages import AnyMessage, SystemMessage, ToolMessage
+from langchain.messages import AIMessage, AnyMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -57,6 +58,7 @@ from gns3_copilot.prompts import TITLE_PROMPT, load_system_prompt
 from gns3_copilot.prompts.fortigate_config_prompt import (
     should_inject_fortigate_prompt,
 )
+from gns3_copilot.prompts.fortinet_base_prompt import FORTINET_BASELINE_PROMPT
 from gns3_copilot.prompts.fortigate_config_strategy import (
     build_fortigate_strategy_prompt,
     get_fortigate_config_strategy,
@@ -123,6 +125,29 @@ tools_by_name = {tool.name: tool for tool in tools}
 logger.info("GNS3 Copilot application starting up")
 logger.debug("Available tools: %s", [tool.__class__.__name__ for tool in tools])
 
+FORTIGATE_CONFIG_TOOL_NAME = "execute_multiple_device_config_commands"
+
+FORTIGATE_CONFIRM_KEYWORDS = {
+    "确认执行",
+    "确认",
+    "同意执行",
+    "请执行",
+    "confirm",
+    "approve",
+    "yes",
+    "y",
+}
+FORTIGATE_CANCEL_KEYWORDS = {
+    "取消执行",
+    "取消",
+    "不要执行",
+    "不执行",
+    "cancel",
+    "abort",
+    "no",
+    "n",
+}
+
 
 # Define state
 # 定义状态
@@ -170,6 +195,14 @@ class MessagesState(TypedDict):
     # Store dry-run topology simulation state
     # 存储 dry-run 拓扑模拟状态
     simulated_topology: dict | None
+
+    # Pending FortiGate config tool call waiting for explicit user confirmation
+    # 等待用户明确确认的 FortiGate 配置工具调用
+    pending_fortigate_config_call: dict | None
+
+    # Human-readable preview of pending FortiGate CLI commands
+    # 待确认 FortiGate CLI 命令的可读预览
+    pending_fortigate_config_preview: str | None
 
 
 def _normalize_content_blocks_to_text(content: list[Any]) -> str:
@@ -254,6 +287,231 @@ def _serialize_message_for_log(message: AnyMessage) -> dict[str, Any]:
         payload["tool_call_id"] = tool_call_id
 
     return payload
+
+
+def _stringify_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content") or str(item)
+                parts.append(str(text))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _latest_human_text(messages: list[AnyMessage] | None) -> str:
+    if not isinstance(messages, list):
+        return ""
+
+    for message in reversed(messages):
+        msg_type = str(getattr(message, "type", "")).lower()
+        cls_name = message.__class__.__name__.lower()
+        if msg_type == "human" or "human" in cls_name:
+            return _stringify_message_content(getattr(message, "content", "")).strip()
+    return ""
+
+
+def _normalize_confirmation_token(text: str) -> str:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return ""
+    # Chinese confirmations are usually written without spaces.
+    return normalized.replace(" ", "")
+
+
+def _resolve_fortigate_confirmation(text: str) -> Literal["confirm", "cancel", "unknown"]:
+    token = _normalize_confirmation_token(text)
+    if not token:
+        return "unknown"
+    if token in {item.replace(" ", "") for item in FORTIGATE_CONFIRM_KEYWORDS}:
+        return "confirm"
+    if token in {item.replace(" ", "") for item in FORTIGATE_CANCEL_KEYWORDS}:
+        return "cancel"
+    return "unknown"
+
+
+def _parse_json_payload(value: Any) -> dict[str, Any] | list[Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (str, bytes, bytearray)):
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    return None
+
+
+def _extract_tool_payload(tool_args: Any) -> dict[str, Any] | list[Any] | None:
+    parsed_args = _parse_json_payload(tool_args)
+    if isinstance(parsed_args, dict) and "tool_input" in parsed_args:
+        payload = _parse_json_payload(parsed_args.get("tool_input"))
+        return payload
+    return parsed_args
+
+
+def _extract_device_configs_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        configs = payload.get("device_configs", [])
+        if isinstance(configs, list):
+            return [item for item in configs if isinstance(item, dict)]
+        return []
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _node_looks_like_fortigate(node: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(node.get(key, "")).lower()
+        for key in ("name", "template_name", "template_type", "template_id")
+    )
+    return "forti" in text or "fgt" in text
+
+
+def _topology_nodes(
+    topology_info: dict[str, Any] | None,
+    simulated_topology: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    if isinstance(topology_info, dict):
+        topology_nodes = topology_info.get("nodes", {})
+        if isinstance(topology_nodes, dict):
+            nodes.extend(
+                item for item in topology_nodes.values() if isinstance(item, dict)
+            )
+        elif isinstance(topology_nodes, list):
+            nodes.extend(item for item in topology_nodes if isinstance(item, dict))
+    if isinstance(simulated_topology, dict):
+        simulated_nodes = simulated_topology.get("nodes", [])
+        if isinstance(simulated_nodes, list):
+            nodes.extend(item for item in simulated_nodes if isinstance(item, dict))
+    return nodes
+
+
+def _is_fortigate_device_name(
+    device_name: str,
+    topology_info: dict[str, Any] | None = None,
+    simulated_topology: dict[str, Any] | None = None,
+) -> bool:
+    lowered = str(device_name or "").strip().lower()
+    if "forti" in lowered or "fgt" in lowered:
+        return True
+
+    if not lowered:
+        return False
+
+    for node in _topology_nodes(topology_info, simulated_topology):
+        node_name = str(node.get("name", "")).strip().lower()
+        if node_name and node_name == lowered and _node_looks_like_fortigate(node):
+            return True
+    return False
+
+
+def _fortigate_command_blocks_from_tool_call(
+    tool_call: dict[str, Any],
+    topology_info: dict[str, Any] | None = None,
+    simulated_topology: dict[str, Any] | None = None,
+) -> list[tuple[str, list[str]]]:
+    if str(tool_call.get("name", "")) != FORTIGATE_CONFIG_TOOL_NAME:
+        return []
+
+    payload = _extract_tool_payload(tool_call.get("args", {}))
+    configs = _extract_device_configs_from_payload(payload)
+    blocks: list[tuple[str, list[str]]] = []
+
+    for cfg in configs:
+        device_name = str(cfg.get("device_name", "")).strip()
+        if not _is_fortigate_device_name(
+            device_name=device_name,
+            topology_info=topology_info,
+            simulated_topology=simulated_topology,
+        ):
+            continue
+        commands = cfg.get("config_commands", [])
+        if not isinstance(commands, list):
+            commands = []
+        command_lines = [str(item).strip() for item in commands if str(item).strip()]
+        blocks.append((device_name or "FortiGate", command_lines))
+    return blocks
+
+
+def _find_fortigate_config_tool_call(
+    tool_calls: list[dict[str, Any]] | None,
+    topology_info: dict[str, Any] | None = None,
+    simulated_topology: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(tool_calls, list):
+        return None
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        blocks = _fortigate_command_blocks_from_tool_call(
+            tool_call,
+            topology_info=topology_info,
+            simulated_topology=simulated_topology,
+        )
+        if blocks:
+            return tool_call
+    return None
+
+
+def _render_fortigate_cli_preview(
+    tool_call: dict[str, Any],
+    topology_info: dict[str, Any] | None = None,
+    simulated_topology: dict[str, Any] | None = None,
+) -> str:
+    blocks = _fortigate_command_blocks_from_tool_call(
+        tool_call,
+        topology_info=topology_info,
+        simulated_topology=simulated_topology,
+    )
+    if not blocks:
+        return "Unable to parse FortiGate CLI preview from tool call."
+
+    preview_lines: list[str] = []
+    for index, (device_name, commands) in enumerate(blocks, start=1):
+        if len(blocks) > 1:
+            preview_lines.append(f"# Device {index}: {device_name}")
+        elif device_name:
+            preview_lines.append(f"# Device: {device_name}")
+        preview_lines.extend(commands)
+        if index < len(blocks):
+            preview_lines.append("")
+    return "\n".join(preview_lines).strip()
+
+
+def _build_fortigate_confirmation_message(preview: str) -> str:
+    return (
+        "检测到 FortiGate 配置调用。为避免误下发，我已先拦截执行。\n\n"
+        "请先确认以下 FortiGate CLI 草案：\n\n"
+        f"```cli\n{preview}\n```\n\n"
+        "若确认执行，请回复 `确认执行`（或 `confirm`）。\n"
+        "若取消执行，请回复 `取消执行`（或 `cancel`）。"
+    )
+
+
+def _build_pending_confirmation_reminder(preview: str) -> str:
+    message = (
+        "当前有一个待确认的 FortiGate 配置任务。\n"
+        "请回复 `确认执行`（或 `confirm`）继续，或回复 `取消执行`（或 `cancel`）放弃。"
+    )
+    if preview.strip():
+        return f"{message}\n\n```cli\n{preview}\n```"
+    return message
 
 
 def _extract_trace_context(config: Any) -> tuple[str | None, str | None]:
@@ -391,11 +649,15 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     SystemMessage(content=f"Current Context: {project_info}")
                 )
 
-    if dry_run_enabled and should_inject_fortigate_prompt(
+    fortigate_context = should_inject_fortigate_prompt(
         messages=state.get("messages", []),
         topology_info=topology_info,
         simulated_topology=simulated_topology,
-    ):
+    )
+    if fortigate_context:
+        context_messages.append(SystemMessage(content=FORTINET_BASELINE_PROMPT))
+
+    if dry_run_enabled and fortigate_context:
         fortigate_strategy = get_fortigate_config_strategy()
         non_baseline_post_validation = is_non_baseline_post_validation_enabled()
         logger.info(
@@ -424,12 +686,95 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
     )
     # print(full_messages)
 
+    pending_call = state.get("pending_fortigate_config_call")
+    pending_preview = str(state.get("pending_fortigate_config_preview", "") or "")
+    if isinstance(pending_call, dict):
+        latest_text = _latest_human_text(state.get("messages", []))
+        decision = _resolve_fortigate_confirmation(latest_text)
+        if decision == "confirm":
+            confirmed_message = AIMessage(content="", tool_calls=[pending_call])
+            _log_llm_interaction(
+                tag="base_model",
+                inputs=full_messages,
+                output=confirmed_message,
+                config=config,
+            )
+            result: dict[str, Any] = {
+                "messages": [confirmed_message],
+                "topology_info": topology_info,
+                "pending_fortigate_config_call": None,
+                "pending_fortigate_config_preview": None,
+            }
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
+
+        if decision == "cancel":
+            canceled_message = AIMessage(
+                content=(
+                    "已取消本次 FortiGate 配置执行。"
+                    "请告诉我你希望如何调整配置，我会重新生成草案。"
+                )
+            )
+            _log_llm_interaction(
+                tag="base_model",
+                inputs=full_messages,
+                output=canceled_message,
+                config=config,
+            )
+            result = {
+                "messages": [canceled_message],
+                "topology_info": topology_info,
+                "pending_fortigate_config_call": None,
+                "pending_fortigate_config_preview": None,
+            }
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
+
+        reminder_message = AIMessage(
+            content=_build_pending_confirmation_reminder(pending_preview)
+        )
+        _log_llm_interaction(
+            tag="base_model",
+            inputs=full_messages,
+            output=reminder_message,
+            config=config,
+        )
+        result = {
+            "messages": [reminder_message],
+            "topology_info": topology_info,
+        }
+        if dry_run_enabled and simulated_topology is not None:
+            result["simulated_topology"] = simulated_topology
+        return result
+
     # Create fresh model with tools for each LLM call
     # This ensures configuration changes in .env take effect immediately
     # 为每次 LLM 调用创建新的带工具的模型
     # 这确保 .env 中的配置更改立即生效
     model_with_tools = create_base_model_with_tools(tools)
     llm_response = model_with_tools.invoke(full_messages)
+    pending_update: dict[str, Any] = {}
+    fortigate_tool_call = _find_fortigate_config_tool_call(
+        getattr(llm_response, "tool_calls", None),
+        topology_info=topology_info,
+        simulated_topology=simulated_topology,
+    )
+    if fortigate_tool_call:
+        preview_text = _render_fortigate_cli_preview(
+            fortigate_tool_call,
+            topology_info=topology_info,
+            simulated_topology=simulated_topology,
+        )
+        llm_response = AIMessage(
+            content=_build_fortigate_confirmation_message(preview_text)
+        )
+        pending_update = {
+            "pending_fortigate_config_call": fortigate_tool_call,
+            "pending_fortigate_config_preview": preview_text,
+        }
+
     _log_llm_interaction(
         tag="base_model",
         inputs=full_messages,
@@ -442,6 +787,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
         "llm_calls": state.get("llm_calls", 0) + 1,
         "topology_info": topology_info,
     }
+    if pending_update:
+        result.update(pending_update)
     if dry_run_enabled and simulated_topology is not None:
         result["simulated_topology"] = simulated_topology
     return result

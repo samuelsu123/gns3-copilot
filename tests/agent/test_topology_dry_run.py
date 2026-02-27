@@ -373,7 +373,7 @@ def test_dry_run_config_tool_marks_incomplete_when_route_is_missing(monkeypatch)
 
 
 def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used(monkeypatch) -> None:
-    """FortiGate preview should fail when management port is used for business config."""
+    """Persona-only strategy keeps validator as audit-only and does not drive LLM decisions."""
     monkeypatch.setattr(
         "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
         lambda: "persona_only",
@@ -431,10 +431,13 @@ def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used(monkeypatch
         tool_args={"tool_input": json.dumps(tool_input)},
         simulated_topology=simulated_topology,
     )
-    assert result[0]["status"] == "incomplete"
+    assert result[0]["status"] == "success"
+    assert result[0]["validation_status"] == "not_validated"
+    assert result[0]["post_validation_enabled"] is False
     assert result[0]["source"] == "fortigate_persona_only"
     assert result[0]["fortigate_strategy"] == "persona_only"
-    assert "mgmt_port_reserved" in result[0]["missing_requirements"]
+    assert result[0]["missing_requirements"] == []
+    assert result[0]["recommended_next_step"] == "none"
 
 
 def test_dry_run_config_tool_skips_validation_for_non_baseline_by_default(

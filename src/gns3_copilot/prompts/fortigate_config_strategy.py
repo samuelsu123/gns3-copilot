@@ -147,15 +147,8 @@ def _build_persona_only_prompt(
     simulated_topology: dict[str, Any] | None,
     post_validation_enabled: bool,
 ) -> str:
-    missing_text = _build_missing_requirements_text(simulated_topology)
-
-    post_validation_instruction = (
-        "5. If tool output reports `validation_status=incomplete`, do not finalize. "
-        "Ask user for missing items and regenerate."
-        if post_validation_enabled
-        else "5. Hard post-validation is disabled for non-baseline strategies in current settings. "
-        "You MUST self-validate configuration completeness before finalizing."
-    )
+    _ = simulated_topology
+    _ = post_validation_enabled
 
     prompt = f"""
 ### FortiGate Dry-Run Persona-Only Strategy
@@ -167,10 +160,14 @@ Workflow rules:
 1. Build topology and links first.
 2. You MUST call `execute_multiple_device_config_commands` in dry-run mode to generate FortiGate config preview.
 3. `config_commands` MUST only contain native FortiGate CLI lines. No explanation text in config list.
-4. If required info is missing, ask concise follow-up questions before claiming completion.
-{post_validation_instruction}
-
-Latest missing requirements reported by validator: {missing_text}
+4. Reserve `port1` for management only. Never use `port1` in business IP, static route device, or firewall policy interfaces.
+5. Use business interfaces from `port2`/`port3` (and above if needed).
+6. The preview must include all core blocks: ip/route/policy.
+   - `config system interface` for business interfaces
+   - `config router static` with both `set dst` and `set device`
+   - `config firewall policy` with bidirectional allow policies as needed
+7. If required info is missing, ask concise follow-up questions before claiming completion.
+8. In persona-only mode, backend validator signals are audit-only. You MUST self-validate completeness and ask user clarifications before finalizing.
 """
     return prompt.strip()
 

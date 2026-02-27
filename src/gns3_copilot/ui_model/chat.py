@@ -48,7 +48,11 @@ import streamlit as st
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
 from gns3_copilot.agent import agent
-from gns3_copilot.agent.prompt_trace import end_trace_request, start_trace_request
+from gns3_copilot.agent.prompt_trace import (
+    append_fortigate_config_trace,
+    end_trace_request,
+    start_trace_request,
+)
 from gns3_copilot.gns3_client import GNS3ProjectList
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.ui_model.utils import (
@@ -115,6 +119,77 @@ def _get_snapshot_values(snapshot: Any) -> dict[str, Any]:
     if isinstance(snapshot, dict):
         return snapshot
     return {}
+
+
+def _get_config_previews(snapshot: Any) -> list[dict[str, Any]]:
+    """Extract dry-run config previews from snapshot values."""
+    values = _get_snapshot_values(snapshot)
+    simulated_topology = values.get("simulated_topology")
+    if not isinstance(simulated_topology, dict):
+        return []
+
+    previews = simulated_topology.get("config_previews", [])
+    if not isinstance(previews, list):
+        return []
+
+    return [item for item in previews if isinstance(item, dict)]
+
+
+def _is_fortigate_preview(item: dict[str, Any]) -> bool:
+    source = str(item.get("source", "")).lower()
+    strategy = str(item.get("fortigate_strategy", "")).lower()
+    device_name = str(item.get("device_name", "")).lower()
+    return (
+        "forti" in device_name
+        or "fgt" in device_name
+        or source.startswith("fortigate_")
+        or strategy.startswith("predefined")
+        or strategy.startswith("hybrid")
+        or strategy.startswith("persona")
+    )
+
+
+def _count_fortigate_previews(snapshot: Any) -> int:
+    return sum(1 for item in _get_config_previews(snapshot) if _is_fortigate_preview(item))
+
+
+def _extract_new_fortigate_config(
+    snapshot: Any,
+    previous_fortigate_preview_count: int | None,
+) -> str | None:
+    """Extract pure FortiGate CLI from newly generated preview in current request."""
+    if previous_fortigate_preview_count is None:
+        return None
+
+    fortigate_previews = [
+        item for item in _get_config_previews(snapshot) if _is_fortigate_preview(item)
+    ]
+    if not fortigate_previews:
+        return None
+
+    if previous_fortigate_preview_count >= len(fortigate_previews):
+        return None
+
+    candidates = fortigate_previews[previous_fortigate_preview_count:]
+    eligible: list[dict[str, Any]] = []
+    for item in candidates:
+        validation_status = str(item.get("validation_status", "")).lower()
+        if validation_status in {"success", "not_validated"}:
+            eligible.append(item)
+
+    if not eligible:
+        return None
+
+    latest_preview = eligible[-1]
+    commands = latest_preview.get("config_commands", [])
+    if not isinstance(commands, list):
+        return None
+
+    lines = [str(command).strip() for command in commands if str(command).strip()]
+    if not lines:
+        return None
+
+    return "\n".join(lines)
 
 
 def _render_simulated_topology_data(snapshot: Any) -> None:
@@ -511,6 +586,19 @@ if selected_p:
                         exc,
                     )
 
+            previous_fortigate_preview_count: int | None = None
+            try:
+                previous_state_snapshot = agent.get_state(config)
+                previous_fortigate_preview_count = _count_fortigate_previews(
+                    previous_state_snapshot
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to read pre-request preview state (thread_id=%s): %s",
+                    trace_thread_id,
+                    exc,
+                )
+
             stream_error: Exception | None = None
             with history_container:
                 # 在聊天消息容器中显示助手响应
@@ -711,7 +799,50 @@ if selected_p:
                             trace_request_id,
                         )
 
+            # 交互后，使用最新的状态快照更新会话状态
+            # After the interaction, update the session state with the latest StateSnapshot
+            state_history = None
+            try:
+                state_history = agent.get_state(config)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to get post-request state (thread_id=%s, request_id=%s): %s",
+                    trace_thread_id,
+                    trace_request_id,
+                    exc,
+                )
+            # 避免在 state_history 为空时更新
+            # Avoid updating if state_history is empty
+            if state_history is not None and state_history[0]:
+                # 更新会话状态
+                # Update session state
+                st.session_state["state_history"] = state_history
+                with history_container:
+                    _render_simulated_topology_data(state_history)
+                # print(state_history)
+            # with open('state_history.txt', "a", encoding='utf-8') as f:
+            #    f.write(f"{state_history}\n\n")
+
             if trace_thread_id:
+                try:
+                    fortigate_config = _extract_new_fortigate_config(
+                        snapshot=state_history,
+                        previous_fortigate_preview_count=previous_fortigate_preview_count,
+                    )
+                    if fortigate_config:
+                        append_fortigate_config_trace(
+                            thread_id=trace_thread_id,
+                            request_id=trace_request_id,
+                            config_text=fortigate_config,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Prompt trace FortiGate config append failed (thread_id=%s, request_id=%s): %s",
+                        trace_thread_id,
+                        trace_request_id,
+                        exc,
+                    )
+
                 try:
                     end_trace_request(
                         thread_id=trace_thread_id,
@@ -729,23 +860,6 @@ if selected_p:
 
             if stream_error is not None:
                 raise stream_error
-
-            # 交互后，使用最新的状态快照更新会话状态
-            # After the interaction, update the session state with the latest StateSnapshot
-            state_history = agent.get_state(config)
-            # 避免在 state_history 为空时更新
-            # Avoid updating if state_history is empty
-            if not state_history[0]:
-                pass
-            else:
-                # 更新会话状态
-                # Update session state
-                st.session_state["state_history"] = state_history
-                with history_container:
-                    _render_simulated_topology_data(state_history)
-                # print(state_history)
-            # with open('state_history.txt', "a", encoding='utf-8') as f:
-            #    f.write(f"{state_history}\n\n")
 
     with chat_input_right:
         # 在右列中创建两个子列，按钮从左到右排列

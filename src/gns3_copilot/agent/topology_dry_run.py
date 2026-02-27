@@ -12,6 +12,7 @@ from typing import Any, Callable
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.prompts.fortigate_config_strategy import (
     FORTIGATE_CONFIG_STRATEGIES,
+    FORTIGATE_STRATEGY_PERSONA_ONLY,
     FORTIGATE_STRATEGY_PREDEFINED_RULES,
     get_fortigate_config_strategy,
     is_non_baseline_post_validation_enabled,
@@ -620,18 +621,38 @@ def _dry_run_execute_config_commands(
         source = "manual_preview"
         fortigate_strategy = "not_applicable"
         post_validation_enabled = False
+        audit_validation_status = "not_applicable"
+        audit_missing_requirements: list[str] = []
+        persona_audit_only = False
 
         if is_fortigate:
             fortigate_strategy = active_strategy
             source = strategy_to_preview_source(active_strategy)
+            persona_audit_only = active_strategy == FORTIGATE_STRATEGY_PERSONA_ONLY
             post_validation_enabled = (
-                active_strategy == FORTIGATE_STRATEGY_PREDEFINED_RULES
-                or non_baseline_post_validation_enabled
+                not persona_audit_only
+                and (
+                    active_strategy == FORTIGATE_STRATEGY_PREDEFINED_RULES
+                    or non_baseline_post_validation_enabled
+                )
             )
-            if post_validation_enabled:
+            if persona_audit_only:
+                (
+                    audit_validation_status,
+                    audit_missing_requirements,
+                ) = _validate_fortigate_commands(commands=commands)
+                validation_status = "not_validated"
+                missing_requirements = []
+                output = (
+                    "Commands generated in dry-run mode (not executed on device). "
+                    "Persona-only validator output is audit-only and hidden from LLM decisions."
+                )
+            elif post_validation_enabled:
                 validation_status, missing_requirements = _validate_fortigate_commands(
                     commands=commands
                 )
+                audit_validation_status = validation_status
+                audit_missing_requirements = list(missing_requirements)
                 if validation_status == "incomplete":
                     status = "incomplete"
                     missing_text = ", ".join(missing_requirements) or "unknown"
@@ -676,9 +697,12 @@ def _dry_run_execute_config_commands(
                         "source": source,
                         "device_name": device_name,
                         "post_validation_enabled": post_validation_enabled,
+                        "persona_audit_only": persona_audit_only,
                         "validation_status": validation_status,
                         "missing_requirements": missing_requirements,
                         "recommended_next_step": preview["recommended_next_step"],
+                        "audit_validation_status": audit_validation_status,
+                        "audit_missing_requirements": audit_missing_requirements,
                     },
                     ensure_ascii=False,
                 ),
