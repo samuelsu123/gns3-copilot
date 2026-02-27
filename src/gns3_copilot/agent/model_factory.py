@@ -9,6 +9,8 @@ to take effect without restarting the application.
 这允许配置更改在不重启应用程序的情况下生效。
 """
 
+import json
+import time
 from typing import Any
 
 from langchain.chat_models import init_chat_model
@@ -16,10 +18,147 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 
+from gns3_copilot.agent.prompt_trace import append_http_trace_round
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.utils import get_config
 
 logger = setup_logger("model_factory")
+
+_SENSITIVE_HEADERS = {
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "cookie",
+    "set-cookie",
+}
+
+
+def _redact_headers(headers: dict[str, Any]) -> dict[str, str]:
+    sanitized: dict[str, str] = {}
+    for key, value in headers.items():
+        key_text = str(key)
+        lower_key = key_text.lower()
+        if lower_key in _SENSITIVE_HEADERS or "token" in lower_key:
+            sanitized[key_text] = "***REDACTED***"
+        else:
+            sanitized[key_text] = str(value)
+    return sanitized
+
+
+def _decode_http_body(raw_body: bytes | None) -> Any:
+    if not raw_body:
+        return ""
+
+    text = raw_body.decode("utf-8", errors="replace").strip()
+    if not text:
+        return ""
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _attach_http_trace_hooks(
+    model: Any,
+    trace_context: tuple[str, str] | None,
+    model_tag: str,
+) -> None:
+    if not trace_context:
+        return
+
+    thread_id, request_id = trace_context
+    if not thread_id or not request_id:
+        return
+
+    root_client = getattr(model, "root_client", None)
+    http_client = getattr(root_client, "_client", None)
+    if http_client is None:
+        logger.warning("Skip HTTP trace hook: missing OpenAI http client")
+        return
+
+    event_hooks = getattr(http_client, "event_hooks", None)
+    if not isinstance(event_hooks, dict):
+        logger.warning("Skip HTTP trace hook: event_hooks is unavailable")
+        return
+
+    request_hooks = event_hooks.get("request")
+    response_hooks = event_hooks.get("response")
+    if not isinstance(request_hooks, list):
+        request_hooks = list(request_hooks or [])
+        event_hooks["request"] = request_hooks
+    if not isinstance(response_hooks, list):
+        response_hooks = list(response_hooks or [])
+        event_hooks["response"] = response_hooks
+
+    in_flight: dict[int, dict[str, Any]] = {}
+
+    def _request_payload(request: Any) -> dict[str, Any]:
+        body_bytes = getattr(request, "content", b"")
+        return {
+            "method": str(getattr(request, "method", "")),
+            "url": str(getattr(request, "url", "")),
+            "headers": _redact_headers(dict(getattr(request, "headers", {}))),
+            "body": _decode_http_body(body_bytes),
+        }
+
+    def _response_payload(response: Any) -> dict[str, Any]:
+        body_bytes = getattr(response, "content", b"")
+        payload: dict[str, Any] = {
+            "status_code": int(getattr(response, "status_code", 0)),
+            "reason_phrase": str(getattr(response, "reason_phrase", "")),
+            "headers": _redact_headers(dict(getattr(response, "headers", {}))),
+            "body": _decode_http_body(body_bytes),
+        }
+        return payload
+
+    def _on_request(request: Any) -> None:
+        try:
+            in_flight[id(request)] = {
+                "started_at": time.perf_counter(),
+                "request_payload": _request_payload(request),
+            }
+        except Exception as exc:
+            logger.warning("HTTP trace request hook failed: %s", exc)
+
+    def _on_response(response: Any) -> None:
+        try:
+            response.read()
+        except Exception:
+            pass
+
+        try:
+            request_obj = getattr(response, "request", None)
+            request_key = id(request_obj) if request_obj is not None else -1
+            entry = in_flight.pop(request_key, {})
+
+            request_payload = entry.get("request_payload")
+            if not isinstance(request_payload, dict) and request_obj is not None:
+                request_payload = _request_payload(request_obj)
+            if not isinstance(request_payload, dict):
+                request_payload = {}
+
+            response_payload = _response_payload(response)
+            started_at = entry.get("started_at")
+            if isinstance(started_at, float):
+                response_payload["elapsed_ms"] = round(
+                    (time.perf_counter() - started_at) * 1000,
+                    2,
+                )
+
+            append_http_trace_round(
+                thread_id=thread_id,
+                request_id=request_id,
+                model_tag=model_tag,
+                request_payload=request_payload,
+                response_payload=response_payload,
+            )
+        except Exception as exc:
+            logger.warning("HTTP trace response hook failed: %s", exc)
+
+    request_hooks.append(_on_request)
+    response_hooks.append(_on_response)
 
 
 def _load_env_variables() -> dict[str, str]:
@@ -40,7 +179,10 @@ def _load_env_variables() -> dict[str, str]:
     }
 
 
-def create_base_model() -> Runnable[LanguageModelInput, AIMessage]:
+def create_base_model(
+    trace_context: tuple[str, str] | None = None,
+    model_tag: str = "base_model",
+) -> Runnable[LanguageModelInput, AIMessage]:
     """
     Create a fresh base LLM model instance from current environment variables.
     从当前环境变量创建新的基础 LLM 模型实例。
@@ -81,15 +223,23 @@ def create_base_model() -> Runnable[LanguageModelInput, AIMessage]:
         raise ValueError("MODE_PROVIDER environment variable is required")
 
     try:
-        model = init_chat_model(
-            env_vars["model_name"],
-            model_provider=env_vars["model_provider"],
-            api_key=env_vars["api_key"],
-            base_url=env_vars["base_url"],
-            temperature=env_vars["temperature"],
-            configurable_fields="any",
-            config_prefix="foo",
-        )
+        provider = env_vars["model_provider"].strip().lower()
+        model_kwargs: dict[str, Any] = {
+            "model_provider": env_vars["model_provider"],
+            "api_key": env_vars["api_key"],
+            "base_url": env_vars["base_url"],
+            "temperature": env_vars["temperature"],
+            "configurable_fields": "any",
+            "config_prefix": "foo",
+        }
+
+        model = init_chat_model(env_vars["model_name"], **model_kwargs)
+        if provider == "openai":
+            _attach_http_trace_hooks(
+                model=model,
+                trace_context=trace_context,
+                model_tag=model_tag,
+            )
 
         logger.info("Base model created successfully")
         return model
@@ -99,7 +249,10 @@ def create_base_model() -> Runnable[LanguageModelInput, AIMessage]:
         raise RuntimeError(f"Failed to create base model: {e}") from e
 
 
-def create_title_model() -> Runnable[LanguageModelInput, AIMessage]:
+def create_title_model(
+    trace_context: tuple[str, str] | None = None,
+    model_tag: str = "title_model",
+) -> Runnable[LanguageModelInput, AIMessage]:
     """
     Create a fresh title generation model instance.
     创建新的标题生成模型实例。
@@ -137,16 +290,24 @@ def create_title_model() -> Runnable[LanguageModelInput, AIMessage]:
         raise ValueError("MODE_PROVIDER environment variable is required")
 
     try:
-        model = init_chat_model(
-            env_vars["model_name"],
-            model_provider=env_vars["model_provider"],
-            api_key=env_vars["api_key"],
-            base_url=env_vars["base_url"],
-            temperature="1.0",  # Higher temperature for more creative titles
-                                 # 更高的温度以获得更有创意的标题
-            configurable_fields="any",
-            config_prefix="foo",
-        )
+        provider = env_vars["model_provider"].strip().lower()
+        model_kwargs: dict[str, Any] = {
+            "model_provider": env_vars["model_provider"],
+            "api_key": env_vars["api_key"],
+            "base_url": env_vars["base_url"],
+            "temperature": "1.0",  # Higher temperature for more creative titles
+                                   # 更高的温度以获得更有创意的标题
+            "configurable_fields": "any",
+            "config_prefix": "foo",
+        }
+
+        model = init_chat_model(env_vars["model_name"], **model_kwargs)
+        if provider == "openai":
+            _attach_http_trace_hooks(
+                model=model,
+                trace_context=trace_context,
+                model_tag=model_tag,
+            )
 
         logger.info("Title model created successfully")
         return model
@@ -244,6 +405,8 @@ def create_note_organizer_model() -> Runnable[LanguageModelInput, AIMessage]:
 
 def create_base_model_with_tools(
     tools: list[Any],
+    trace_context: tuple[str, str] | None = None,
+    model_tag: str = "base_model",
 ) -> Runnable[LanguageModelInput, AIMessage]:
     """
     Create a fresh base model instance with tools bound.
@@ -267,5 +430,5 @@ def create_base_model_with_tools(
         RuntimeError: If model creation or tool binding fails.
                       如果模型创建或工具绑定失败。
     """
-    base_model = create_base_model()
+    base_model = create_base_model(trace_context=trace_context, model_tag=model_tag)
     return create_model_with_tools(base_model, tools)

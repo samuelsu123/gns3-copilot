@@ -872,7 +872,17 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
     # This ensures configuration changes in .env take effect immediately
     # 为每次 LLM 调用创建新的带工具的模型
     # 这确保 .env 中的配置更改立即生效
-    model_with_tools = create_base_model_with_tools(tools)
+    trace_thread_id, trace_request_id = _extract_trace_context(config)
+    trace_context = (
+        (trace_thread_id, trace_request_id)
+        if trace_thread_id and trace_request_id
+        else None
+    )
+    model_with_tools = create_base_model_with_tools(
+        tools,
+        trace_context=trace_context,
+        model_tag="base_model",
+    )
     llm_response = model_with_tools.invoke(full_messages)
     pending_update: dict[str, Any] = {}
     fortigate_tool_call = _find_fortigate_config_tool_call(
@@ -963,7 +973,16 @@ def generate_title(
         try:
             # Create fresh title model instance from current env configuration
             # 从当前 env 配置创建新的标题模型实例
-            title_model = create_title_model()
+            trace_thread_id, trace_request_id = _extract_trace_context(config)
+            trace_context = (
+                (trace_thread_id, trace_request_id)
+                if trace_thread_id and trace_request_id
+                else None
+            )
+            title_model = create_title_model(
+                trace_context=trace_context,
+                model_tag="title_model",
+            )
             title_response = title_model.invoke(
                 title_prompt_messages,
                 config={"configurable": {"foo_temperature": 1.0}},

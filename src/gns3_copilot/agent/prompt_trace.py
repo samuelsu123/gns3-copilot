@@ -20,6 +20,7 @@ _FILE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 _TRACE_LOCK = threading.RLock()
 _REQUEST_STATE: dict[tuple[str, str], dict[str, Any]] = {}
+_HTTP_TRACE_STATE: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _now_str() -> str:
@@ -58,6 +59,18 @@ def _session_file_path(
 ) -> Path:
     safe_thread_id = _safe_filename_fragment(thread_id)
     return _resolve_trace_dir(trace_root) / f"session_{safe_thread_id}.md"
+
+
+def _http_trace_file_path(
+    thread_id: str,
+    request_id: str,
+    trace_root: str | Path | None = None,
+) -> Path:
+    safe_thread_id = _safe_filename_fragment(thread_id)
+    safe_request_id = _safe_filename_fragment(request_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"http_trace_{safe_thread_id}_{safe_request_id}_{timestamp}.md"
+    return _resolve_trace_dir(trace_root) / filename
 
 
 def _ensure_session_file(
@@ -262,6 +275,69 @@ def append_llm_trace_round(
         }
 
 
+def append_http_trace_round(
+    thread_id: str,
+    request_id: str,
+    model_tag: str,
+    request_payload: dict[str, Any],
+    response_payload: dict[str, Any],
+    trace_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """
+    Append one real HTTP API request/response round into a dedicated trace file.
+    """
+    if not thread_id or not request_id:
+        raise ValueError("thread_id and request_id are required")
+
+    with _TRACE_LOCK:
+        key = (thread_id, request_id)
+        state = _HTTP_TRACE_STATE.get(key)
+
+        if state is None:
+            trace_dir = _resolve_trace_dir(trace_root)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            file_path = _http_trace_file_path(
+                thread_id=thread_id,
+                request_id=request_id,
+                trace_root=trace_root,
+            )
+            header = [
+                "# HTTP API Trace",
+                "",
+                f"- Thread ID: `{thread_id}`",
+                f"- Request ID: `{request_id}`",
+                f"- Created At: `{_now_str()}`",
+                "",
+            ]
+            file_path.write_text("\n".join(header), encoding="utf-8")
+            state = {"round_number": 0, "file_path": str(file_path)}
+            _HTTP_TRACE_STATE[key] = state
+
+        state["round_number"] += 1
+        round_number = state["round_number"]
+        file_path = Path(state["file_path"])
+
+        block = [
+            f"## HTTP Round {round_number} - {model_tag}",
+            f"- Timestamp: `{_now_str()}`",
+            "",
+            "### Request",
+            _fenced_text(request_payload, "json"),
+            "",
+            "### Response",
+            _fenced_text(response_payload, "json"),
+            "",
+        ]
+
+        with file_path.open("a", encoding="utf-8") as file:
+            file.write("\n".join(block))
+
+        return {
+            "round_number": round_number,
+            "file_path": str(file_path),
+        }
+
+
 def end_trace_request(
     thread_id: str,
     request_id: str,
@@ -282,6 +358,7 @@ def end_trace_request(
     with _TRACE_LOCK:
         key = (thread_id, request_id)
         state = _REQUEST_STATE.pop(key, None)
+        _HTTP_TRACE_STATE.pop(key, None)
         if state is None:
             return None
 
