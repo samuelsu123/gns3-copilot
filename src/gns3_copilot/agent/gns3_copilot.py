@@ -58,8 +58,11 @@ from gns3_copilot.prompts import TITLE_PROMPT, load_system_prompt
 from gns3_copilot.prompts.fortigate_config_prompt import (
     should_inject_fortigate_prompt,
 )
-from gns3_copilot.prompts.fortinet_base_prompt import FORTINET_BASELINE_PROMPT
+from gns3_copilot.prompts.fortinet_base_prompt import (
+    build_fortinet_baseline_prompt,
+)
 from gns3_copilot.prompts.fortigate_config_strategy import (
+    FORTIGATE_STRATEGY_PERSONA_ONLY,
     build_fortigate_strategy_prompt,
     get_fortigate_config_strategy,
     is_non_baseline_post_validation_enabled,
@@ -147,6 +150,13 @@ FORTIGATE_CANCEL_KEYWORDS = {
     "no",
     "n",
 }
+FORTIGATE_QUALITY_PASS_KEYWORDS = {
+    "配置无问题",
+    "没问题",
+    "继续",
+    "ok",
+    "okay",
+}
 
 
 # Define state
@@ -203,6 +213,14 @@ class MessagesState(TypedDict):
     # Human-readable preview of pending FortiGate CLI commands
     # 待确认 FortiGate CLI 命令的可读预览
     pending_fortigate_config_preview: str | None
+
+    # Pending FortiGate config tool call waiting for quality review confirmation
+    # 等待质量确认的 FortiGate 配置工具调用
+    pending_fortigate_quality_call: dict | None
+
+    # Human-readable preview for pending FortiGate quality review
+    # 待质量确认 FortiGate CLI 命令的可读预览
+    pending_fortigate_quality_preview: str | None
 
 
 def _normalize_content_blocks_to_text(content: list[Any]) -> str:
@@ -335,6 +353,17 @@ def _resolve_fortigate_confirmation(text: str) -> Literal["confirm", "cancel", "
     if token in {item.replace(" ", "") for item in FORTIGATE_CANCEL_KEYWORDS}:
         return "cancel"
     return "unknown"
+
+
+def _resolve_fortigate_quality_review(
+    text: str,
+) -> Literal["pass", "cancel", "feedback"]:
+    token = _normalize_confirmation_token(text)
+    if token in {item.replace(" ", "") for item in FORTIGATE_QUALITY_PASS_KEYWORDS}:
+        return "pass"
+    if token in {item.replace(" ", "") for item in FORTIGATE_CANCEL_KEYWORDS}:
+        return "cancel"
+    return "feedback"
 
 
 def _parse_json_payload(value: Any) -> dict[str, Any] | list[Any] | None:
@@ -504,6 +533,17 @@ def _build_fortigate_confirmation_message(preview: str) -> str:
     )
 
 
+def _build_fortigate_quality_review_message(preview: str) -> str:
+    return (
+        "检测到 FortiGate 配置调用。请先完成配置质量确认。\n\n"
+        "请检查以下 FortiGate CLI 草案：\n\n"
+        f"```cli\n{preview}\n```\n\n"
+        "若草案有问题，请直接回复要修改的点，我会重新生成。\n"
+        "若草案无问题，请回复 `配置无问题`（或 `没问题` / `继续` / `ok`）继续到执行确认。\n"
+        "若取消执行，请回复 `取消执行`（或 `cancel`）。"
+    )
+
+
 def _build_pending_confirmation_reminder(preview: str) -> str:
     message = (
         "当前有一个待确认的 FortiGate 配置任务。\n"
@@ -654,12 +694,27 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
         topology_info=topology_info,
         simulated_topology=simulated_topology,
     )
-    if fortigate_context:
-        context_messages.append(SystemMessage(content=FORTINET_BASELINE_PROMPT))
+    fortigate_strategy: str | None = None
+    non_baseline_post_validation = False
 
     if dry_run_enabled and fortigate_context:
         fortigate_strategy = get_fortigate_config_strategy()
         non_baseline_post_validation = is_non_baseline_post_validation_enabled()
+
+    if fortigate_context:
+        include_completeness_intent = not (
+            dry_run_enabled
+            and fortigate_strategy == FORTIGATE_STRATEGY_PERSONA_ONLY
+        )
+        context_messages.append(
+            SystemMessage(
+                content=build_fortinet_baseline_prompt(
+                    include_completeness_intent=include_completeness_intent
+                )
+            )
+        )
+
+    if dry_run_enabled and fortigate_context and fortigate_strategy is not None:
         logger.info(
             "Injecting FortiGate dry-run strategy prompt: strategy=%s, non_baseline_post_validation=%s",
             fortigate_strategy,
@@ -686,6 +741,66 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
     )
     # print(full_messages)
 
+    quality_pending_reset: dict[str, Any] = {}
+    pending_quality_call = state.get("pending_fortigate_quality_call")
+    pending_quality_preview = str(state.get("pending_fortigate_quality_preview", "") or "")
+    if isinstance(pending_quality_call, dict):
+        latest_text = _latest_human_text(state.get("messages", []))
+        quality_decision = _resolve_fortigate_quality_review(latest_text)
+        if quality_decision == "pass":
+            confirmation_message = AIMessage(
+                content=_build_fortigate_confirmation_message(pending_quality_preview)
+            )
+            _log_llm_interaction(
+                tag="base_model",
+                inputs=full_messages,
+                output=confirmation_message,
+                config=config,
+            )
+            result = {
+                "messages": [confirmation_message],
+                "topology_info": topology_info,
+                "pending_fortigate_quality_call": None,
+                "pending_fortigate_quality_preview": None,
+                "pending_fortigate_config_call": pending_quality_call,
+                "pending_fortigate_config_preview": pending_quality_preview,
+            }
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
+
+        if quality_decision == "cancel":
+            canceled_message = AIMessage(
+                content=(
+                    "已取消本次 FortiGate 配置执行。"
+                    "请告诉我你希望如何调整配置，我会重新生成草案。"
+                )
+            )
+            _log_llm_interaction(
+                tag="base_model",
+                inputs=full_messages,
+                output=canceled_message,
+                config=config,
+            )
+            result = {
+                "messages": [canceled_message],
+                "topology_info": topology_info,
+                "pending_fortigate_quality_call": None,
+                "pending_fortigate_quality_preview": None,
+                "pending_fortigate_config_call": None,
+                "pending_fortigate_config_preview": None,
+            }
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
+
+        # Any other reply is treated as revision feedback; clear quality pending
+        # and let this user message flow into a normal LLM regeneration turn.
+        quality_pending_reset = {
+            "pending_fortigate_quality_call": None,
+            "pending_fortigate_quality_preview": None,
+        }
+
     pending_call = state.get("pending_fortigate_config_call")
     pending_preview = str(state.get("pending_fortigate_config_preview", "") or "")
     if isinstance(pending_call, dict):
@@ -704,6 +819,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "topology_info": topology_info,
                 "pending_fortigate_config_call": None,
                 "pending_fortigate_config_preview": None,
+                "pending_fortigate_quality_call": None,
+                "pending_fortigate_quality_preview": None,
             }
             if dry_run_enabled and simulated_topology is not None:
                 result["simulated_topology"] = simulated_topology
@@ -727,6 +844,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "topology_info": topology_info,
                 "pending_fortigate_config_call": None,
                 "pending_fortigate_config_preview": None,
+                "pending_fortigate_quality_call": None,
+                "pending_fortigate_quality_preview": None,
             }
             if dry_run_enabled and simulated_topology is not None:
                 result["simulated_topology"] = simulated_topology
@@ -767,13 +886,29 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             topology_info=topology_info,
             simulated_topology=simulated_topology,
         )
-        llm_response = AIMessage(
-            content=_build_fortigate_confirmation_message(preview_text)
-        )
-        pending_update = {
-            "pending_fortigate_config_call": fortigate_tool_call,
-            "pending_fortigate_config_preview": preview_text,
-        }
+        if (
+            dry_run_enabled
+            and fortigate_strategy == FORTIGATE_STRATEGY_PERSONA_ONLY
+        ):
+            llm_response = AIMessage(
+                content=_build_fortigate_quality_review_message(preview_text)
+            )
+            pending_update = {
+                "pending_fortigate_quality_call": fortigate_tool_call,
+                "pending_fortigate_quality_preview": preview_text,
+                "pending_fortigate_config_call": None,
+                "pending_fortigate_config_preview": None,
+            }
+        else:
+            llm_response = AIMessage(
+                content=_build_fortigate_confirmation_message(preview_text)
+            )
+            pending_update = {
+                "pending_fortigate_config_call": fortigate_tool_call,
+                "pending_fortigate_config_preview": preview_text,
+                "pending_fortigate_quality_call": None,
+                "pending_fortigate_quality_preview": None,
+            }
 
     _log_llm_interaction(
         tag="base_model",
@@ -787,6 +922,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
         "llm_calls": state.get("llm_calls", 0) + 1,
         "topology_info": topology_info,
     }
+    if quality_pending_reset:
+        result.update(quality_pending_reset)
     if pending_update:
         result.update(pending_update)
     if dry_run_enabled and simulated_topology is not None:

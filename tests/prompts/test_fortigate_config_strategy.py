@@ -84,7 +84,8 @@ def test_build_persona_only_prompt_has_persona_workflow_only() -> None:
     assert "Persona-Only Strategy" in prompt
     assert "execute_multiple_device_config_commands" in prompt
     assert "Reserve `port1` for management only" in prompt
-    assert "core blocks: ip/route/policy" in prompt
+    assert "core blocks: ip/route/policy" not in prompt
+    assert "self-validate the draft for completeness" in prompt
     assert "validator signals are audit-only" in prompt
     assert "Latest missing requirements reported by validator" not in prompt
 

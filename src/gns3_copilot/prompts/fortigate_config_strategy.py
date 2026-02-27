@@ -162,12 +162,9 @@ Workflow rules:
 3. `config_commands` MUST only contain native FortiGate CLI lines. No explanation text in config list.
 4. Reserve `port1` for management only. Never use `port1` in business IP, static route device, or firewall policy interfaces.
 5. Use business interfaces from `port2`/`port3` (and above if needed).
-6. The preview must include all core blocks: ip/route/policy.
-   - `config system interface` for business interfaces
-   - `config router static` with both `set dst` and `set device`
-   - `config firewall policy` with bidirectional allow policies as needed
-7. If required info is missing, ask concise follow-up questions before claiming completion.
-8. In persona-only mode, backend validator signals are audit-only. You MUST self-validate completeness and ask user clarifications before finalizing.
+6. Before finalizing or asking for execution, self-validate the draft for completeness.
+7. If required info or required config intent is missing, ask concise follow-up questions first.
+8. In persona-only mode, backend validator signals are audit-only. LLM self-validation decides follow-up questions and regeneration.
 """
     return prompt.strip()
 
