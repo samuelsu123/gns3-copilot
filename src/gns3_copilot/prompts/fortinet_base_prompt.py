@@ -24,6 +24,7 @@ Apply these rules whenever the request involves FortiGate devices:
 
 2. Before finalizing a FortiGate configuration, self-check completeness.
 {completeness_line}   - If any required information is missing, ask concise follow-up questions first.
+   - Ask exactly one question per turn and use a `clarify_options` fenced JSON block with 2-5 options.
 
 3. For every FortiGate configuration execution request, require explicit user confirmation.
    - Show the exact FortiGate CLI draft first.

@@ -55,7 +55,7 @@ def test_fortigate_tool_call_is_intercepted_and_requires_confirmation(monkeypatc
     monkeypatch.setattr(
         agent_module,
         "create_base_model_with_tools",
-        lambda _tools: fake_model,
+        lambda _tools, **_kwargs: fake_model,
     )
 
     state = {
@@ -87,7 +87,7 @@ def test_persona_only_tool_call_is_intercepted_for_quality_review(monkeypatch) -
     monkeypatch.setattr(
         agent_module,
         "create_base_model_with_tools",
-        lambda _tools: fake_model,
+        lambda _tools, **_kwargs: fake_model,
     )
 
     state = {
@@ -114,7 +114,7 @@ def test_persona_only_tool_call_is_intercepted_for_quality_review(monkeypatch) -
 def test_persona_quality_pass_transitions_to_execution_confirmation(monkeypatch) -> None:
     """Quality pass response should move pending call into execution confirmation gate."""
 
-    def _should_not_invoke(_tools):
+    def _should_not_invoke(_tools, **_kwargs):
         raise AssertionError("Model invocation is not expected while resolving quality gate")
 
     monkeypatch.setattr(agent_module, "create_base_model_with_tools", _should_not_invoke)
@@ -147,7 +147,7 @@ def test_persona_quality_feedback_clears_pending_and_regenerates(monkeypatch) ->
     monkeypatch.setattr(
         agent_module,
         "create_base_model_with_tools",
-        lambda _tools: fake_model,
+        lambda _tools, **_kwargs: fake_model,
     )
 
     state = {
@@ -174,7 +174,7 @@ def test_confirmation_executes_pending_fortigate_tool_call_without_new_llm_invok
 ) -> None:
     """Explicit confirmation should execute pending tool call directly."""
 
-    def _should_not_invoke(_tools):
+    def _should_not_invoke(_tools, **_kwargs):
         raise AssertionError("Model invocation is not expected for confirmed pending call")
 
     monkeypatch.setattr(agent_module, "create_base_model_with_tools", _should_not_invoke)
@@ -202,7 +202,7 @@ def test_confirmation_executes_pending_fortigate_tool_call_without_new_llm_invok
 def test_cancel_clears_pending_fortigate_call(monkeypatch) -> None:
     """Cancel input should clear pending FortiGate config call."""
 
-    def _should_not_invoke(_tools):
+    def _should_not_invoke(_tools, **_kwargs):
         raise AssertionError("Model invocation is not expected for canceled pending call")
 
     monkeypatch.setattr(agent_module, "create_base_model_with_tools", _should_not_invoke)
@@ -230,7 +230,7 @@ def test_cancel_clears_pending_fortigate_call(monkeypatch) -> None:
 def test_non_confirmation_keeps_pending_state_and_reminds_user(monkeypatch) -> None:
     """Non-confirmation input should keep pending call and request explicit decision."""
 
-    def _should_not_invoke(_tools):
+    def _should_not_invoke(_tools, **_kwargs):
         raise AssertionError("Model invocation is not expected while waiting for confirmation")
 
     monkeypatch.setattr(agent_module, "create_base_model_with_tools", _should_not_invoke)
@@ -263,7 +263,7 @@ def test_non_fortigate_config_call_is_not_intercepted(monkeypatch) -> None:
     monkeypatch.setattr(
         agent_module,
         "create_base_model_with_tools",
-        lambda _tools: fake_model,
+        lambda _tools, **_kwargs: fake_model,
     )
 
     state = {

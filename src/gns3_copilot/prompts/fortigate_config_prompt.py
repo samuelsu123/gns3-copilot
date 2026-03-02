@@ -171,7 +171,7 @@ Strict workflow:
    - `config system interface` (business IPs)
    - `config router static` (interface static routes with both `set dst` and `set device`)
    - `config firewall policy` (allow policy for traffic between the two PC networks)
-7. If required info is missing, ask concise follow-up questions before claiming completion.
+7. If required info is missing, ask exactly one follow-up question at a time using a `clarify_options` fenced JSON block with 2-5 options.
 8. If tool output reports `validation_status=incomplete`, do not finalize. Ask user for missing items and regenerate.
 
 Latest missing requirements reported by validator: {missing_text}

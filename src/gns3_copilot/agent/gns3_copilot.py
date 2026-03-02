@@ -55,6 +55,9 @@ from gns3_copilot.agent.topology_dry_run import (
 from gns3_copilot.gns3_client import GNS3TopologyTool
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.prompts import TITLE_PROMPT, load_system_prompt
+from gns3_copilot.prompts.clarification_choice_prompt import (
+    build_clarification_choice_prompt,
+)
 from gns3_copilot.prompts.fortigate_config_prompt import (
     should_inject_fortigate_prompt,
 )
@@ -688,6 +691,10 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 context_messages.append(
                     SystemMessage(content=f"Current Context: {project_info}")
                 )
+
+    context_messages.append(
+        SystemMessage(content=build_clarification_choice_prompt())
+    )
 
     fortigate_context = should_inject_fortigate_prompt(
         messages=state.get("messages", []),

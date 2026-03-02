@@ -66,6 +66,7 @@ def test_build_hybrid_min_prompt_contains_core_block_constraint() -> None:
         strategy=FORTIGATE_STRATEGY_HYBRID_MIN_CONSTRAINTS
     )
     assert "core blocks: ip/route/policy" in prompt
+    assert "`clarify_options` fenced JSON block" in prompt
     assert "Reserve `port1` for management only" in prompt
 
 
@@ -85,6 +86,7 @@ def test_build_persona_only_prompt_has_persona_workflow_only() -> None:
     assert "execute_multiple_device_config_commands" in prompt
     assert "Reserve `port1` for management only" in prompt
     assert "core blocks: ip/route/policy" not in prompt
+    assert "`clarify_options` fenced JSON block" in prompt
     assert "self-validate the draft for completeness" in prompt
     assert "validator signals are audit-only" in prompt
     assert "Latest missing requirements reported by validator" not in prompt

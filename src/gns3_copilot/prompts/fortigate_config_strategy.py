@@ -135,7 +135,7 @@ Workflow rules:
 3. `config_commands` MUST only contain native FortiGate CLI lines. No explanation text in config list.
 4. Reserve `port1` for management only. Never use `port1` in business IP, static route device, or firewall policy interfaces.
 5. Use business interfaces from `port2`/`port3` (and above if needed).
-{core_constraints}7. If required info is missing, ask concise follow-up questions before claiming completion.
+{core_constraints}7. If required info is missing, ask exactly one follow-up question at a time using a `clarify_options` fenced JSON block with 2-5 options.
 {post_validation_instruction}
 
 Latest missing requirements reported by validator: {missing_text}
@@ -163,7 +163,7 @@ Workflow rules:
 4. Reserve `port1` for management only. Never use `port1` in business IP, static route device, or firewall policy interfaces.
 5. Use business interfaces from `port2`/`port3` (and above if needed).
 6. Before finalizing or asking for execution, self-validate the draft for completeness.
-7. If required info or required config intent is missing, ask concise follow-up questions first.
+7. If required info or required config intent is missing, ask exactly one follow-up question at a time using a `clarify_options` fenced JSON block with 2-5 options.
 8. In persona-only mode, backend validator signals are audit-only. LLM self-validation decides follow-up questions and regeneration.
 """
     return prompt.strip()

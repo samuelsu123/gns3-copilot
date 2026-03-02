@@ -44,6 +44,10 @@ from gns3_copilot.ui_model.utils.chat_helpers import (
     generate_topology_iframe_html,
     new_session,
 )
+from gns3_copilot.ui_model.utils.clarification_options import (
+    parse_clarification_question_from_text,
+    strip_clarification_blocks_from_text,
+)
 from gns3_copilot.ui_model.utils.config_manager import (
     init_app_config,
     load_config,
@@ -92,6 +96,8 @@ __all__ = [
     "new_session",
     "build_topology_iframe_url",
     "generate_topology_iframe_html",
+    "parse_clarification_question_from_text",
+    "strip_clarification_blocks_from_text",
     # Project Manager UI
     "render_create_project_form",
     "render_project_cards",

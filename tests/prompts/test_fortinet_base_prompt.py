@@ -13,6 +13,7 @@ def test_build_default_baseline_prompt_contains_completeness_intent() -> None:
     prompt = build_fortinet_baseline_prompt()
     assert "interface IP intent, routing intent, and policy intent" in prompt
     assert "Keep `port1` reserved for management only" in prompt
+    assert "`clarify_options` fenced JSON block" in prompt
     assert "require explicit user confirmation" in prompt
 
 
@@ -22,6 +23,7 @@ def test_build_persona_baseline_prompt_omits_completeness_intent() -> None:
     assert "interface IP intent, routing intent, and policy intent" not in prompt
     assert "Keep `port1` reserved for management only" in prompt
     assert "If any required information is missing, ask concise follow-up questions first." in prompt
+    assert "`clarify_options` fenced JSON block" in prompt
     assert "require explicit user confirmation" in prompt
 
 

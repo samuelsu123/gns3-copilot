@@ -58,8 +58,10 @@ from gns3_copilot.log_config import setup_logger
 from gns3_copilot.ui_model.utils import (
     build_topology_iframe_url,
     generate_topology_iframe_html,
+    parse_clarification_question_from_text,
     render_create_project_form,
     render_project_cards,
+    strip_clarification_blocks_from_text,
 )
 from gns3_copilot.utils import (
     format_tool_response,
@@ -190,6 +192,57 @@ def _extract_new_fortigate_config(
         return None
 
     return "\n".join(lines)
+
+
+def _stringify_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content") or str(item)
+                parts.append(str(text))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _latest_assistant_text(snapshot: Any) -> str:
+    values = _get_snapshot_values(snapshot)
+    messages = values.get("messages", [])
+    if not isinstance(messages, list):
+        return ""
+
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            text = _stringify_message_content(getattr(message, "content", "")).strip()
+            if text:
+                return text
+    return ""
+
+
+def _extract_latest_clarification_question(snapshot: Any) -> dict[str, Any] | None:
+    latest_text = _latest_assistant_text(snapshot)
+    if not latest_text:
+        return None
+
+    try:
+        return parse_clarification_question_from_text(latest_text)
+    except Exception as exc:
+        logger.debug("clarify_options parse failed: %s", exc)
+        return None
+
+
+def _displayable_assistant_text(raw_text: str) -> str:
+    try:
+        return strip_clarification_blocks_from_text(raw_text)
+    except Exception as exc:
+        logger.debug("Failed to strip clarification blocks: %s", exc)
+        return raw_text
 
 
 def _render_simulated_topology_data(snapshot: Any) -> None:
@@ -416,10 +469,18 @@ if selected_p:
                                 and message_object.content
                                 and "text" in message_object.content[0]
                             ):
-                                st.markdown(message_object.content[0]["text"])
+                                display_text = _displayable_assistant_text(
+                                    str(message_object.content[0]["text"])
+                                )
+                                if display_text:
+                                    st.markdown(display_text)
                             # Plain string content
                             elif isinstance(message_object.content, str):
-                                st.markdown(message_object.content)
+                                display_text = _displayable_assistant_text(
+                                    message_object.content
+                                )
+                                if display_text:
+                                    st.markdown(display_text)
                             # AIMessage tool_calls
                             if (
                                 isinstance(message_object.tool_calls, list)
@@ -496,6 +557,56 @@ if selected_p:
                 st.markdown(iframe_html, unsafe_allow_html=True)
 
     # st.divider()
+    selected_option_value: str | None = None
+    hidden_question_state_key = "hidden_clarification_question_key"
+    if hidden_question_state_key not in st.session_state:
+        st.session_state[hidden_question_state_key] = None
+
+    clarification_question = _extract_latest_clarification_question(
+        st.session_state.get("state_history")
+    )
+    if clarification_question:
+        interaction_thread_id = _extract_thread_id(config) or current_thread_id
+        question_id = clarification_question["question_id"]
+        current_question_key = f"{interaction_thread_id}:{question_id}"
+        hidden_question_key = st.session_state.get(hidden_question_state_key)
+
+        # New question should reset old hidden state so new options can appear.
+        if hidden_question_key and hidden_question_key != current_question_key:
+            st.session_state[hidden_question_state_key] = None
+            hidden_question_key = None
+
+        if hidden_question_key != current_question_key:
+            clarify_placeholder = st.empty()
+            option_clicked = False
+            with clarify_placeholder.container():
+                st.caption(clarification_question["question"])
+                options = clarification_question.get("options", [])
+                option_columns = st.columns(len(options)) if options else []
+                for index, option in enumerate(options):
+                    option_key = (
+                        "clarify:"
+                        f"{interaction_thread_id}:"
+                        f"{question_id}:"
+                        f"{option['id']}"
+                    )
+                    with option_columns[index]:
+                        if st.button(
+                            option["label"],
+                            key=option_key,
+                            use_container_width=True,
+                        ):
+                            selected_option_value = option["value"]
+                            option_clicked = True
+                if clarification_question.get("allow_free_text", True):
+                    st.caption("You can also type a custom reply below.")
+
+            if option_clicked:
+                st.session_state[hidden_question_state_key] = current_question_key
+                clarify_placeholder.empty()
+    elif st.session_state.get(hidden_question_state_key):
+        st.session_state[hidden_question_state_key] = None
+
     # --- 聊天输入区域 ---
     # --- Chat Input Area ---
     if st.session_state.show_iframe:
@@ -534,24 +645,31 @@ if selected_p:
             )
         # 处理输入
         # Handle input
+        user_text: str | None = None
         if prompt:
-            user_text = ""
+            resolved_user_text = ""
             if voice_enabled:
                 # 模式 A：prompt 是一个对象（包含 .text 和 .audio）
                 # Mode A: prompt is an object (containing .text and .audio)
                 if prompt.audio:
-                    user_text = speech_to_text(prompt.audio)
+                    resolved_user_text = speech_to_text(prompt.audio)
                 # 如果语音未转换为文本，或用户直接输入
                 # If voice is not converted to text, or user directly types
-                if not user_text:
-                    user_text = prompt.text
+                if not resolved_user_text:
+                    resolved_user_text = prompt.text
             else:
                 # 模式 B：prompt 直接是字符串
                 # Mode B: prompt is directly a string
-                user_text = prompt
+                resolved_user_text = prompt
+            user_text = str(resolved_user_text)
+        elif selected_option_value:
+            user_text = selected_option_value
+
+        if user_text is not None:
+            user_text = user_text.strip()
             # 3. 最终检查并运行
             # 3. Final check and run
-            if not user_text or user_text.strip() == "":
+            if not user_text:
                 st.stop()
 
             with history_container:
@@ -605,7 +723,7 @@ if selected_p:
                 # Display assistant response in chat message container
                 with st.chat_message("assistant"):
                     active_text_placeholder = st.empty()
-                    current_text_chunk = ""
+                    current_text_chunk_raw = ""
                     # 核心聚合状态：仅存储当前流式工具信息
                     # Core aggregation state: only stores currently streaming tool information
                     # 结构：{'id': str, 'name': str, 'args_string': str} 或 None
@@ -633,6 +751,9 @@ if selected_p:
                                 # with open('log.txt', "a", encoding='utf-8') as f:
                                 #    f.write(f"{msg}\n\n")
                                 if isinstance(msg, AIMessage):
+                                    current_text_chunk = _displayable_assistant_text(
+                                        current_text_chunk_raw
+                                    )
                                     # adapted for gemini
                                     # Check if content is a list and safely extract the first text element
                                     if (
@@ -642,7 +763,10 @@ if selected_p:
                                     ):
                                         actual_text = msg.content[0]["text"]
                                         # Now actual_text is the clean text you need
-                                        current_text_chunk += actual_text
+                                        current_text_chunk_raw += actual_text
+                                        current_text_chunk = _displayable_assistant_text(
+                                            current_text_chunk_raw
+                                        )
                                         # Only display text in non-voice mode
                                         if not voice_enabled:
                                             active_text_placeholder.markdown(
@@ -650,7 +774,10 @@ if selected_p:
                                                 unsafe_allow_html=True,
                                             )
                                     elif isinstance(msg.content, str):
-                                        current_text_chunk += str(msg.content)
+                                        current_text_chunk_raw += str(msg.content)
+                                        current_text_chunk = _displayable_assistant_text(
+                                            current_text_chunk_raw
+                                        )
                                         # Only display text in non-voice mode
                                         if not voice_enabled:
                                             active_text_placeholder.markdown(
@@ -789,7 +916,7 @@ if selected_p:
                                             json.loads(content_pretty), expanded=False
                                         )
                                     active_text_placeholder = st.empty()
-                                    current_text_chunk = ""
+                                    current_text_chunk_raw = ""
                                     tts_played = False
                     except Exception as exc:
                         stream_error = exc
@@ -860,6 +987,12 @@ if selected_p:
 
             if stream_error is not None:
                 raise stream_error
+
+            latest_clarification_question = _extract_latest_clarification_question(
+                state_history
+            )
+            if latest_clarification_question is not None:
+                st.rerun()
 
     with chat_input_right:
         # 在右列中创建两个子列，按钮从左到右排列
