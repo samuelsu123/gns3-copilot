@@ -76,6 +76,19 @@ DEFAULT_CONFIG: dict[str, str] = {
     "TOPOLOGY_DRY_RUN": "True",  # 拓扑生成 dry-run 模式（不调用 GNS3 写操作）
     "FORTIGATE_CONFIG_STRATEGY": "hybrid_min_constraints",  # FortiGate dry-run 策略
     "FORTIGATE_NON_BASELINE_POST_VALIDATION": "False",  # 非 baseline 模式是否启用后校验
+    # RAG 配置 | RAG Configuration
+    "RAG_ENABLED": "False",  # RAG 功能总开关 | RAG feature toggle
+    "RAG_CHROMA_PATH": "",  # ChromaDB 路径（空=data/chroma_db）| ChromaDB path (empty=data/chroma_db)
+    "RAG_COLLECTION_NAME": "fortinet_docs",  # 集合名称 | Collection name
+    "RAG_EMBEDDING_PROVIDER": "openai",  # 嵌入提供商 | Embedding provider
+    "RAG_EMBEDDING_MODEL": "text-embedding-3-small",  # 嵌入模型 | Embedding model
+    "RAG_EMBEDDING_API_KEY": "",  # 嵌入 API Key（空=复用 MODEL_API_KEY）| Embedding API key
+    "RAG_EMBEDDING_BASE_URL": "",  # 嵌入 Base URL（空=复用 BASE_URL）| Embedding base URL
+    "RAG_TOP_K": "5",  # 返回文档块数量 | Number of document chunks to return
+    "RAG_CLI_CHUNK_SIZE": "800",  # CLI 文档块大小 | CLI doc chunk size
+    "RAG_CLI_CHUNK_OVERLAP": "100",  # CLI 文档块重叠 | CLI doc chunk overlap
+    "RAG_GUIDE_CHUNK_SIZE": "1500",  # 指南文档块大小 | Guide doc chunk size
+    "RAG_GUIDE_CHUNK_OVERLAP": "200",  # 指南文档块重叠 | Guide doc chunk overlap
     # 其他设置 | Other Settings
     "LANGUAGE": "zh",  # 应用界面语言
     "TTS_HTTP_REFERER": "",  # TTS HTTP 参考来源

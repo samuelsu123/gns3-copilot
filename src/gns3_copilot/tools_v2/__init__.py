@@ -34,6 +34,7 @@ Author: Guobin Yue
 # Import main tool classes
 from .config_tools_nornir import ExecuteMultipleDeviceConfigCommands
 from .display_tools_nornir import ExecuteMultipleDeviceCommands
+from .fortinet_rag_tool import FortinetKnowledgeBaseTool
 from .gns3_create_area_drawing import GNS3CreateAreaDrawingTool
 from .gns3_create_link import GNS3LinkTool
 from .gns3_create_node import GNS3CreateNodeTool
@@ -58,6 +59,7 @@ __url__ = "https://github.com/yueguobin/gns3-copilot"
 __all__ = [
     "ExecuteMultipleDeviceConfigCommands",
     "ExecuteMultipleDeviceCommands",
+    "FortinetKnowledgeBaseTool",
     "VPCSMultiCommands",
     "GNS3CreateNodeTool",
     "GNS3LinkTool",

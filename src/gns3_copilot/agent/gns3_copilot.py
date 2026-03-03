@@ -73,6 +73,7 @@ from gns3_copilot.prompts.fortigate_config_strategy import (
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
     ExecuteMultipleDeviceConfigCommands,
+    FortinetKnowledgeBaseTool,
     GNS3CreateAreaDrawingTool,
     GNS3CreateNodeTool,
     GNS3LinkTool,
@@ -119,6 +120,8 @@ tools = [
                               # 通过 Telnet 在多个设备上执行 Linux 命令
     GNS3CreateAreaDrawingTool(),  # Create area drawings in GNS3 topologies
                                    # 在 GNS3 拓扑中创建区域绘图
+    FortinetKnowledgeBaseTool(),  # Search Fortinet knowledge base via RAG
+                                   # 通过 RAG 检索 Fortinet 知识库
 ]
 # Augment the LLM with tools
 # 使用工具增强 LLM

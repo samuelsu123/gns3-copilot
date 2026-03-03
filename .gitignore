@@ -192,3 +192,4 @@ notes/*.md
 
 .junie/*
 prompt_trace/
+data/chroma_db/

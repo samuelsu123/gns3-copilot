@@ -104,6 +104,16 @@ dev = [
     "safety>=2.0.0",
 ]
 
+rag = [
+    "chromadb>=0.5.0",
+    "langchain-chroma>=0.2.0",
+    "langchain-community>=0.3.0",
+    "langchain-huggingface>=0.1.0",
+    "pypdf>=4.0.0",
+    "unstructured>=0.16.0",
+    "beautifulsoup4>=4.12.0",
+]
+
 docs = [
     "mkdocs>=1.6.0",
     "mkdocs-material>=9.5.0",
@@ -222,7 +232,14 @@ module = [
     "netmiko.*",
     "telnetlib3.*",
     "requests.*",
-    "gns3fy.*"
+    "gns3fy.*",
+    "chromadb.*",
+    "langchain_chroma.*",
+    "langchain_community.*",
+    "langchain_huggingface.*",
+    "pypdf.*",
+    "unstructured.*",
+    "bs4.*",
 ]
 ignore_missing_imports = true
 
