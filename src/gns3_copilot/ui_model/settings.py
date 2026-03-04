@@ -290,6 +290,107 @@ with st.container(width=800, horizontal_alignment="center", vertical_alignment="
             """,
         )
 
+    with st.expander("Fortinet Docs RAG (ChromaDB)", expanded=True):
+        st.checkbox(
+            "Enable Fortinet Documentation RAG",
+            key="RAG_ENABLED",
+            value=st.session_state.get("RAG_ENABLED", False),
+            help=(
+                "When enabled, Fortinet/FortiGate requests use documentation retrieval "
+                "before generating configuration guidance."
+            ),
+        )
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.text_input(
+                "Chroma Persist Directory",
+                key="RAG_CHROMA_DIR",
+                value=st.session_state.get("RAG_CHROMA_DIR", "data/chroma"),
+                help="Local directory for ChromaDB persistent storage.",
+                placeholder="e.g., data/chroma",
+            )
+        with col2:
+            backend_options = ["openai", "local"]
+            current_backend = str(
+                st.session_state.get("EMBEDDING_BACKEND", "openai")
+            ).strip().lower()
+            if current_backend not in backend_options:
+                current_backend = "openai"
+            st.selectbox(
+                "Embedding Backend",
+                backend_options,
+                index=backend_options.index(current_backend),
+                key="EMBEDDING_BACKEND",
+                help="Choose embedding backend: openai API or local sentence-transformer model.",
+            )
+
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1:
+            st.text_input(
+                "Default Product",
+                key="RAG_DEFAULT_PRODUCT",
+                value=st.session_state.get("RAG_DEFAULT_PRODUCT", "fortigate"),
+                help="Default product used by retrieval tool when product is not specified.",
+            )
+        with col2:
+            st.text_input(
+                "Default Version",
+                key="RAG_DEFAULT_VERSION",
+                value=st.session_state.get("RAG_DEFAULT_VERSION", "7.6.6"),
+                help="Default documentation version used during retrieval.",
+            )
+        with col3:
+            rag_top_k = st.session_state.get("RAG_TOP_K", 6)
+            try:
+                rag_top_k = int(rag_top_k)
+            except (ValueError, TypeError):
+                rag_top_k = 6
+            rag_top_k = max(1, min(20, rag_top_k))
+            st.slider(
+                "Top K",
+                min_value=1,
+                max_value=20,
+                value=rag_top_k,
+                step=1,
+                key="RAG_TOP_K",
+                help="Number of retrieved chunks returned by Fortinet document search.",
+            )
+
+        rag_min_similarity = st.session_state.get("RAG_MIN_SIMILARITY", 0.25)
+        try:
+            rag_min_similarity = float(rag_min_similarity)
+        except (ValueError, TypeError):
+            rag_min_similarity = 0.25
+        rag_min_similarity = max(0.0, min(1.0, rag_min_similarity))
+        st.slider(
+            "Min Similarity",
+            min_value=0.0,
+            max_value=1.0,
+            value=rag_min_similarity,
+            step=0.05,
+            key="RAG_MIN_SIMILARITY",
+            help="Filter out low-confidence retrieval hits below this similarity threshold.",
+        )
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.text_input(
+                "OpenAI Embedding Model",
+                key="EMBEDDING_OPENAI_MODEL",
+                value=st.session_state.get(
+                    "EMBEDDING_OPENAI_MODEL", "text-embedding-3-small"
+                ),
+                help="Embedding model name used when backend is set to openai.",
+            )
+        with col2:
+            st.text_input(
+                "Local Embedding Model",
+                key="EMBEDDING_LOCAL_MODEL",
+                value=st.session_state.get("EMBEDDING_LOCAL_MODEL", "BAAI/bge-m3"),
+                help="Sentence-transformers model name used when backend is local.",
+            )
+
     with st.expander("Voice Settings (TTS/STT)", expanded=True):
         # Voice Enable/Disable Toggle
         st.caption("Voice Control")
