@@ -1,0 +1,129 @@
+# GNS3拓扑部署指令
+
+请在GNS3中部署以下测试拓扑。
+
+## 节点清单
+1. PC1 - VPCS模板
+2. PC2 - VPCS模板
+3. fortigate1 - FortiGate7.6.6模板
+4. nat1 - NAT模板
+5. switch1 - Ethernet switch模板
+
+## 链路清单
+1. PC1端口0 连接 fortigate1的Ethernet1
+2. PC2端口0 连接 fortigate1的Ethernet2
+3. fortigate1的Ethernet0 连接 switch1的Ethernet0
+4. nat1端口0 连接 switch1的Ethernet1
+
+## 执行步骤
+
+**重要：严格按照以下顺序执行，必须完成所有步骤，不能提前停止。**
+
+### 步骤1：创建所有节点并启动
+- 使用 create_node 创建 PC1、PC2、fortigate1、nat1、switch1
+- 使用 start_all_nodes 启动所有节点
+
+### 步骤2：创建所有链路
+- 使用 create_link 创建以下4条链路：
+  * PC1端口0 ↔ fortigate1的Ethernet1
+  * PC2端口0 ↔ fortigate1的Ethernet2
+  * fortigate1的Ethernet0 ↔ switch1的Ethernet0
+  * nat1端口0 ↔ switch1的Ethernet1
+
+### 步骤3：等待所有节点就绪
+- **必须调用 wait_for_nodes_ready(timeout=600)**
+- 系统会自动完成FortiGate首次登录并设置密码为"Fortinet1@#$"
+- **必须等待此步骤完成后才能继续**
+
+### 步骤4：配置FortiGate接口和路由
+使用 configure_node 配置 fortigate1：
+```
+config system interface
+edit port1
+set mode static
+set ip 192.168.122.10 255.255.255.0
+set allowaccess ping https ssh http
+next
+edit port2
+set mode static
+set ip 192.168.1.1 255.255.255.0
+set allowaccess ping
+next
+edit port3
+set mode static
+set ip 192.168.2.1 255.255.255.0
+set allowaccess ping
+next
+end
+config router static
+edit 1
+set dst 0.0.0.0 0.0.0.0
+set gateway 192.168.122.1
+set device port1
+next
+end
+```
+
+### 步骤5：导入FortiGate license并等待重启
+1. 使用 configure_node 在 fortigate1 上执行：
+   ```
+   execute restore vmlicense ftp /aiops/licenses/FGVMULTM26000146.lic 10.65.10.243 test test
+   ```
+2. 当看到提示 "Do you want to continue? (y/n)" 时，输入 "y"
+3. **关键：license导入会触发FortiGate自动重启**
+4. **必须立即调用 wait_for_nodes_ready(timeout=1200) 等待重启完成**
+5. **必须等待返回成功后才能继续下一步**
+
+### 步骤6：配置防火墙策略
+使用 configure_node 在 fortigate1 上执行：
+```
+config firewall policy
+edit 0
+set name "allow_all"
+set srcintf "any"
+set dstintf "any"
+set srcaddr "all"
+set dstaddr "all"
+set action accept
+set schedule "always"
+set service "ALL"
+set logtraffic "all"
+set nat enable
+next
+end
+```
+
+### 步骤7：配置PC
+1. 使用 configure_node 在 pc1 上执行以下命令：
+  ip 192.168.1.10/24 192.168.1.1
+  ip dns 1.1.1.1
+  save
+2. 使用 configure_node 在 pc2 上执行以下命令：
+  ip 192.168.2.10/24 192.168.2.1
+  ip dns 1.1.1.1
+  save
+
+## 执行规则
+
+1. **严格按步骤顺序执行**，完成上一步后才能进行下一步
+2. **不要跳过任何步骤**，特别是等待和配置步骤
+3. **在步骤3和步骤5后必须调用 wait_for_nodes_ready**
+4. **所有8个步骤都完成后才算部署成功**
+5. **不要在中间步骤停止**，即使某些操作返回成功也要继续执行后续步骤
+
+## CRITICAL: 部署完成检查清单
+
+**必须确认以下所有步骤都已执行，否则部署不完整：**
+
+- [ ] 步骤1：5个节点已创建（PC1, PC2, fortigate1, nat1, switch1）
+- [ ] 步骤2：4条链路已创建
+- [ ] 步骤3：wait_for_nodes_ready 已调用并返回成功
+- [ ] 步骤4：FortiGate接口和路由已配置
+- [ ] 步骤5：license已导入，FortiGate已重启并重新就绪
+- [ ] 步骤6：防火墙策略已配置
+- [ ] 步骤7：PC1和PC2的IP地址已配置
+
+**WARNING: 如果只完成了步骤1-2就停止，部署将不完整，网络将无法正常工作！**
+
+**记住：你的任务是完成所有8个步骤，而不仅仅是创建节点和链路！**
+必须在所有步骤完成并验证通过后才能结束。
