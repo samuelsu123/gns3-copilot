@@ -121,6 +121,29 @@ GNS3 Copilot 集成了 Calibre 内容服务器，提供专门的阅读界面：
 
 <img src="https://raw.githubusercontent.com/yueguobin/gns3-copilot/refs/heads/Development/docs/media/reading_and_notes.gif" alt="GNS3 Copilot Function demonstration" width="1280"/>
 
+## Fortinet 文档 RAG（Demo）
+
+当前版本支持基于 ChromaDB 的 Fortinet 文档检索（RAG）Demo。
+
+快速流程：
+
+1. 入库 FortiGate 文档：
+
+```bash
+python scripts/ingest_fortinet_docs.py \
+  --pdf /path/to/FortiGate_7.6.6_Admin_Guide.pdf \
+  --product fortigate \
+  --version 7.6.6 \
+  --doc-type admin-guide \
+  --language en \
+  --recreate
+```
+
+2. 在 `Settings -> Fortinet Docs RAG (ChromaDB)` 启用 RAG。
+3. 在聊天中提问 FortiGate 配置问题，系统会先检索文档再回答。
+
+详细说明见：[docs/user/fortinet-rag-guide_ZH.md](docs/user/fortinet-rag-guide_ZH.md)
+
 
 ## 文档
 

@@ -79,6 +79,8 @@ nav:
     - Checkpoint Import/Export:
       - user/checkpoint-import-export-guide.md
       - user/checkpoint-import-export-guide_ZH.md
+    - Fortinet RAG Guide:
+      - user/fortinet-rag-guide_ZH.md
   - Development:
     - development/index.md
     - Testing:

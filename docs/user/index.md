@@ -23,6 +23,7 @@ If you're new to GNS3 Copilot, we recommend starting with these guides:
 ### Data Management
 - [Checkpoint Import/Export Guide (English)](checkpoint-import-export-guide.md) - Backup and restore conversation history
 - [Checkpoint 导入导出指南 (中文)](checkpoint-import-export-guide_ZH.md) - 备份和恢复对话历史
+- [Fortinet 文档 RAG 使用指南 (中文)](fortinet-rag-guide_ZH.md) - ChromaDB 文档入库与检索配置
 
 ## Quick Reference
 
