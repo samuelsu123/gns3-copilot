@@ -180,6 +180,7 @@ credentials.json
 
 
 log/*
+data/chroma/
 *.db
 *.db-shm
 *.db-wal

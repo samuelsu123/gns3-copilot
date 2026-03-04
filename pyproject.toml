@@ -90,6 +90,11 @@ dependencies = [
     
     # Audio Processing
     "soundfile>=0.13.1",
+
+    # RAG / Vector Store
+    "chromadb>=0.5.5",
+    "pypdf>=5.9.0",
+    "sentence-transformers>=3.0.1",
 ]
 
 [project.optional-dependencies]

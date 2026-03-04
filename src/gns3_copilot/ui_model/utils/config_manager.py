@@ -70,6 +70,16 @@ CONFIG_MAP = {
     "MODEL_API_KEY": "MODEL_API_KEY",
     "BASE_URL": "BASE_URL",
     "TEMPERATURE": "TEMPERATURE",
+    # RAG Configuration
+    "RAG_ENABLED": "RAG_ENABLED",
+    "RAG_CHROMA_DIR": "RAG_CHROMA_DIR",
+    "RAG_DEFAULT_PRODUCT": "RAG_DEFAULT_PRODUCT",
+    "RAG_DEFAULT_VERSION": "RAG_DEFAULT_VERSION",
+    "RAG_TOP_K": "RAG_TOP_K",
+    "RAG_MIN_SIMILARITY": "RAG_MIN_SIMILARITY",
+    "EMBEDDING_BACKEND": "EMBEDDING_BACKEND",
+    "EMBEDDING_OPENAI_MODEL": "EMBEDDING_OPENAI_MODEL",
+    "EMBEDDING_LOCAL_MODEL": "EMBEDDING_LOCAL_MODEL",
     # Voice Configuration
     "VOICE": "VOICE",
     # Voice TTS Configuration
@@ -177,6 +187,7 @@ def load_config() -> None:
         # Special handling for boolean switches
         if st_key in (
             "VOICE",
+            "RAG_ENABLED",
             "TOPOLOGY_DRY_RUN",
             "FORTIGATE_NON_BASELINE_POST_VALIDATION",
         ):
@@ -214,6 +225,52 @@ def load_config() -> None:
                 strategy = DEFAULT_FORTIGATE_CONFIG_STRATEGY
             st.session_state[st_key] = strategy
             logger.debug("Loaded config: %s = %s", st_key, strategy)
+            continue
+
+        if st_key == "EMBEDDING_BACKEND":
+            backend = str(config_value).strip().lower()
+            if backend not in {"openai", "local"}:
+                logger.debug(
+                    "Invalid EMBEDDING_BACKEND value: %s, setting to default 'openai'",
+                    config_value,
+                )
+                backend = "openai"
+            st.session_state[st_key] = backend
+            logger.debug("Loaded config: %s = %s", st_key, backend)
+            continue
+
+        if st_key == "RAG_TOP_K":
+            try:
+                top_k = int(config_value) if config_value else 6
+                if top_k < 1:
+                    top_k = 1
+                if top_k > 20:
+                    top_k = 20
+                st.session_state[st_key] = top_k
+                logger.debug("Loaded config: %s = %s", st_key, top_k)
+            except ValueError:
+                logger.debug(
+                    "Invalid RAG_TOP_K value: %s, setting to default 6",
+                    config_value,
+                )
+                st.session_state[st_key] = 6
+            continue
+
+        if st_key == "RAG_MIN_SIMILARITY":
+            try:
+                min_similarity = float(config_value) if config_value else 0.25
+                if min_similarity < 0.0:
+                    min_similarity = 0.0
+                if min_similarity > 1.0:
+                    min_similarity = 1.0
+                st.session_state[st_key] = min_similarity
+                logger.debug("Loaded config: %s = %s", st_key, min_similarity)
+            except ValueError:
+                logger.debug(
+                    "Invalid RAG_MIN_SIMILARITY value: %s, setting to default 0.25",
+                    config_value,
+                )
+                st.session_state[st_key] = 0.25
             continue
 
         # Special handling for TTS_SPEED

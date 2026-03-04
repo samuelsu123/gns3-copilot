@@ -47,6 +47,16 @@ DEFAULT_CONFIG: dict[str, str] = {
     "MODEL_API_KEY": "",  # 模型 API 密钥
     "BASE_URL": "",  # 模型 API 基础 URL
     "TEMPERATURE": "0.0",  # 模型温度参数
+    # RAG Configuration
+    "RAG_ENABLED": "False",  # 是否启用 RAG
+    "RAG_CHROMA_DIR": "data/chroma",  # Chroma 持久化目录
+    "RAG_DEFAULT_PRODUCT": "fortigate",  # 默认检索产品
+    "RAG_DEFAULT_VERSION": "7.6.6",  # 默认检索版本
+    "RAG_TOP_K": "6",  # 默认召回数量
+    "RAG_MIN_SIMILARITY": "0.25",  # 最小相似度阈值
+    "EMBEDDING_BACKEND": "openai",  # embedding 后端（openai/local）
+    "EMBEDDING_OPENAI_MODEL": "text-embedding-3-small",  # OpenAI embedding 模型
+    "EMBEDDING_LOCAL_MODEL": "BAAI/bge-m3",  # 本地 embedding 模型
     # 语音配置 | Voice Configuration
     "VOICE": "False",  # 是否启用语音
     # 语音文字转语音(TTS)配置 | Voice TTS Configuration
