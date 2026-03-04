@@ -29,6 +29,11 @@ Apply these rules whenever the request involves FortiGate devices:
 3. For every FortiGate configuration execution request, require explicit user confirmation.
    - Show the exact FortiGate CLI draft first.
    - Wait for user approval before executing `execute_multiple_device_config_commands`.
+
+4. For Fortinet knowledge grounding, always search docs first with `fortinet_doc_search`.
+   - Retrieve evidence before giving configuration guidance.
+   - Cite source references (file + page) in your answer whenever evidence is found.
+   - If no evidence is found, clearly say so and ask one concise clarification question.
 """
     return prompt.strip()
 

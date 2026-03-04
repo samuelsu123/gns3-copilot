@@ -27,6 +27,7 @@ solution for GNS3 environments.
 助手与各种工具集成，为 GNS3 环境提供完整的网络自动化解决方案。
 """
 
+import ast
 import json
 import operator
 import sqlite3
@@ -73,6 +74,7 @@ from gns3_copilot.prompts.fortigate_config_strategy import (
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
     ExecuteMultipleDeviceConfigCommands,
+    FortinetDocSearchTool,
     GNS3CreateAreaDrawingTool,
     GNS3CreateNodeTool,
     GNS3LinkTool,
@@ -106,6 +108,8 @@ logger.info(
 tools = [
     GNS3TemplateTool(),  # Get GNS3 node templates 获取 GNS3 节点模板
     GNS3TopologyTool(),  # Read GNS3 topology information 读取 GNS3 拓扑信息
+    FortinetDocSearchTool(),  # Search Fortinet docs from local ChromaDB
+                             # 从本地 ChromaDB 检索 Fortinet 文档
     GNS3CreateNodeTool(),  # Create new nodes in GNS3 在 GNS3 中创建新节点
     GNS3LinkTool(),  # Create links between nodes 在节点之间创建链路
     GNS3StartNodeTool(),  # Start GNS3 nodes 启动 GNS3 节点
@@ -132,6 +136,8 @@ logger.info("GNS3 Copilot application starting up")
 logger.debug("Available tools: %s", [tool.__class__.__name__ for tool in tools])
 
 FORTIGATE_CONFIG_TOOL_NAME = "execute_multiple_device_config_commands"
+FORTINET_DOC_SEARCH_TOOL_NAME = "fortinet_doc_search"
+RAG_TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 FORTIGATE_CONFIRM_KEYWORDS = {
     "确认执行",
@@ -381,6 +387,12 @@ def _parse_json_payload(value: Any) -> dict[str, Any] | list[Any] | None:
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
+            try:
+                literal = ast.literal_eval(raw)
+            except (ValueError, SyntaxError):
+                return None
+            if isinstance(literal, (dict, list)):
+                return literal
             return None
         if isinstance(parsed, (dict, list)):
             return parsed
@@ -555,6 +567,115 @@ def _build_pending_confirmation_reminder(preview: str) -> str:
     if preview.strip():
         return f"{message}\n\n```cli\n{preview}\n```"
     return message
+
+
+def _is_human_message(message: AnyMessage | None) -> bool:
+    if message is None:
+        return False
+    msg_type = str(getattr(message, "type", "")).lower()
+    cls_name = message.__class__.__name__.lower()
+    return msg_type == "human" or "human" in cls_name
+
+
+def _is_rag_enabled() -> bool:
+    raw = str(get_config("RAG_ENABLED", "False")).strip().lower()
+    return raw in RAG_TRUTHY_VALUES
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in RAG_TRUTHY_VALUES
+
+
+def _extract_latest_fortinet_doc_result(
+    messages: list[AnyMessage] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(messages, list) or not messages:
+        return None
+
+    last_message = messages[-1]
+    if not isinstance(last_message, ToolMessage):
+        return None
+
+    if str(getattr(last_message, "name", "")) != FORTINET_DOC_SEARCH_TOOL_NAME:
+        return None
+
+    payload = _parse_json_payload(getattr(last_message, "content", None))
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _build_strict_no_evidence_message(payload: dict[str, Any]) -> str:
+    product = str(payload.get("product", get_config("RAG_DEFAULT_PRODUCT", "fortigate")))
+    version = str(payload.get("version", get_config("RAG_DEFAULT_VERSION", "7.6.6")))
+
+    clarify_payload = {
+        "kind": "clarification_choice",
+        "question_id": "fortinet_doc_scope",
+        "question": "你希望我优先检索哪个配置方向？",
+        "options": [
+            {
+                "id": "policy",
+                "label": "防火墙策略",
+                "value": "请优先检索防火墙策略和地址对象相关章节",
+            },
+            {
+                "id": "interface",
+                "label": "接口与地址",
+                "value": "请优先检索接口 IP、zone 和管理口相关章节",
+            },
+            {
+                "id": "route",
+                "label": "路由与下一跳",
+                "value": "请优先检索静态路由/动态路由相关章节",
+            },
+            {
+                "id": "nat",
+                "label": "NAT",
+                "value": "请优先检索 SNAT/DNAT/central NAT 相关章节",
+            },
+        ],
+        "allow_free_text": True,
+    }
+
+    return (
+        f"我没有在 `{product} {version}` 文档中检索到足够证据，"
+        "为保证准确性，我不会直接生成配置命令。\\n\\n"
+        "请告诉我你最关心的配置方向，我会按该方向继续检索。\\n\\n"
+        f"```clarify_options\\n{json.dumps(clarify_payload, ensure_ascii=False, indent=2)}\\n```"
+    )
+
+
+def _build_auto_retrieval_tool_call(
+    query: str,
+    llm_calls: int,
+) -> dict[str, Any]:
+    product = str(get_config("RAG_DEFAULT_PRODUCT", "fortigate")).strip() or "fortigate"
+    version = str(get_config("RAG_DEFAULT_VERSION", "7.6.6")).strip() or "7.6.6"
+    top_k = max(1, _safe_int(get_config("RAG_TOP_K", "6"), 6))
+
+    return {
+        "name": FORTINET_DOC_SEARCH_TOOL_NAME,
+        "args": {
+            "query": query,
+            "product": product,
+            "version": version,
+            "top_k": top_k,
+        },
+        "id": f"call_auto_fortinet_doc_search_{max(0, llm_calls)}",
+        "type": "tool_call",
+    }
 
 
 def _extract_trace_context(config: Any) -> tuple[str | None, str | None]:
@@ -874,6 +995,57 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
         if dry_run_enabled and simulated_topology is not None:
             result["simulated_topology"] = simulated_topology
         return result
+
+    messages = state.get("messages", [])
+    last_message = messages[-1] if isinstance(messages, list) and messages else None
+
+    rag_tool_result = _extract_latest_fortinet_doc_result(messages)
+    if isinstance(rag_tool_result, dict) and _safe_bool(
+        rag_tool_result.get("no_evidence"), default=False
+    ):
+        no_evidence_message = AIMessage(
+            content=_build_strict_no_evidence_message(rag_tool_result)
+        )
+        _log_llm_interaction(
+            tag="base_model",
+            inputs=full_messages,
+            output=no_evidence_message,
+            config=config,
+        )
+        result = {
+            "messages": [no_evidence_message],
+            "topology_info": topology_info,
+        }
+        if quality_pending_reset:
+            result.update(quality_pending_reset)
+        if dry_run_enabled and simulated_topology is not None:
+            result["simulated_topology"] = simulated_topology
+        return result
+
+    # Enforce retrieval-first behavior for Fortinet requests.
+    if _is_rag_enabled() and fortigate_context and _is_human_message(last_message):
+        latest_query = _latest_human_text(messages)
+        if latest_query:
+            retrieval_tool_call = _build_auto_retrieval_tool_call(
+                query=latest_query,
+                llm_calls=state.get("llm_calls", 0),
+            )
+            retrieval_message = AIMessage(content="", tool_calls=[retrieval_tool_call])
+            _log_llm_interaction(
+                tag="base_model",
+                inputs=full_messages,
+                output=retrieval_message,
+                config=config,
+            )
+            result = {
+                "messages": [retrieval_message],
+                "topology_info": topology_info,
+            }
+            if quality_pending_reset:
+                result.update(quality_pending_reset)
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
 
     # Create fresh model with tools for each LLM call
     # This ensures configuration changes in .env take effect immediately
