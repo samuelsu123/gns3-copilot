@@ -7,16 +7,12 @@ from __future__ import annotations
 import copy
 import json
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from gns3_copilot.log_config import setup_logger
-from gns3_copilot.prompts.fortigate_config_strategy import (
-    FORTIGATE_CONFIG_STRATEGIES,
-    FORTIGATE_STRATEGY_PERSONA_ONLY,
-    FORTIGATE_STRATEGY_PREDEFINED_RULES,
-    get_fortigate_config_strategy,
-    is_non_baseline_post_validation_enabled,
-    strategy_to_preview_source,
+from gns3_copilot.prompts.fortigate_config_prompt import (
+    FORTIGATE_PREVIEW_SOURCE,
 )
 from gns3_copilot.utils import get_config
 
@@ -601,8 +597,6 @@ def _dry_run_execute_config_commands(
         return [{"error": "device_configs must be a non-empty array"}]
 
     preview_results: list[dict[str, Any]] = []
-    active_strategy = get_fortigate_config_strategy()
-    non_baseline_post_validation_enabled = is_non_baseline_post_validation_enabled()
 
     for item in device_configs:
         if not isinstance(item, dict):
@@ -620,53 +614,21 @@ def _dry_run_execute_config_commands(
         output = "Commands generated in dry-run mode (not executed on device)."
         source = "manual_preview"
         fortigate_strategy = "not_applicable"
-        post_validation_enabled = False
         audit_validation_status = "not_applicable"
         audit_missing_requirements: list[str] = []
-        persona_audit_only = False
 
         if is_fortigate:
-            fortigate_strategy = active_strategy
-            source = strategy_to_preview_source(active_strategy)
-            persona_audit_only = active_strategy == FORTIGATE_STRATEGY_PERSONA_ONLY
-            post_validation_enabled = (
-                not persona_audit_only
-                and (
-                    active_strategy == FORTIGATE_STRATEGY_PREDEFINED_RULES
-                    or non_baseline_post_validation_enabled
-                )
+            fortigate_strategy = "persona_only"
+            source = FORTIGATE_PREVIEW_SOURCE
+            (
+                audit_validation_status,
+                audit_missing_requirements,
+            ) = _validate_fortigate_commands(commands=commands)
+            validation_status = "not_validated"
+            output = (
+                "Commands generated in dry-run mode (not executed on device). "
+                "Persona-only validator output is audit-only and hidden from LLM decisions."
             )
-            if persona_audit_only:
-                (
-                    audit_validation_status,
-                    audit_missing_requirements,
-                ) = _validate_fortigate_commands(commands=commands)
-                validation_status = "not_validated"
-                missing_requirements = []
-                output = (
-                    "Commands generated in dry-run mode (not executed on device). "
-                    "Persona-only validator output is audit-only and hidden from LLM decisions."
-                )
-            elif post_validation_enabled:
-                validation_status, missing_requirements = _validate_fortigate_commands(
-                    commands=commands
-                )
-                audit_validation_status = validation_status
-                audit_missing_requirements = list(missing_requirements)
-                if validation_status == "incomplete":
-                    status = "incomplete"
-                    missing_text = ", ".join(missing_requirements) or "unknown"
-                    output = (
-                        "FortiGate config preview is incomplete in dry-run mode. "
-                        f"Missing requirements: {missing_text}. "
-                        "Ask follow-up questions and regenerate complete config preview."
-                    )
-            else:
-                validation_status = "not_validated"
-                output = (
-                    "Commands generated in dry-run mode (not executed on device). "
-                    "FortiGate hard post-validation is disabled for non-baseline strategy."
-                )
 
         preview = {
             "project_id": project_id or topology.get("project_id"),
@@ -674,14 +636,9 @@ def _dry_run_execute_config_commands(
             "status": status,
             "validation_status": validation_status,
             "missing_requirements": missing_requirements,
-            "recommended_next_step": (
-                "ask_user_for_missing_requirements"
-                if status == "incomplete"
-                else "none"
-            ),
+            "recommended_next_step": "none",
             "source": source,
             "fortigate_strategy": fortigate_strategy,
-            "post_validation_enabled": post_validation_enabled,
             "mode": "dry_run_preview_only",
             "config_commands": commands,
             "output": output,
@@ -696,11 +653,8 @@ def _dry_run_execute_config_commands(
                         "strategy": fortigate_strategy,
                         "source": source,
                         "device_name": device_name,
-                        "post_validation_enabled": post_validation_enabled,
-                        "persona_audit_only": persona_audit_only,
                         "validation_status": validation_status,
                         "missing_requirements": missing_requirements,
-                        "recommended_next_step": preview["recommended_next_step"],
                         "audit_validation_status": audit_validation_status,
                         "audit_missing_requirements": audit_missing_requirements,
                     },
@@ -739,8 +693,7 @@ def _dry_run_execute_config_commands(
             "[FORTIGATE_DRY_RUN_SUMMARY] %s",
             json.dumps(
                 {
-                    "strategy": active_strategy,
-                    "non_baseline_post_validation_enabled": non_baseline_post_validation_enabled,
+                    "strategy": "persona_only",
                     "incomplete_count": incomplete_count,
                     "success_count": success_count,
                     "not_validated_count": not_validated_count,
@@ -782,7 +735,7 @@ def _is_fortigate_preview(item: dict[str, Any]) -> bool:
         "forti" in device_name
         or "fgt" in device_name
         or source.startswith("fortigate_")
-        or strategy in FORTIGATE_CONFIG_STRATEGIES
+        or strategy == "persona_only"
     )
 
 

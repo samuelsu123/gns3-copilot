@@ -64,7 +64,7 @@ def normalize_embedding_backend(backend: str | None) -> str:
 
 
 def _short_model_hash(backend: str, model_name: str) -> str:
-    raw = f"{backend}:{model_name}".encode("utf-8")
+    raw = f"{backend}:{model_name}".encode()
     return hashlib.sha1(raw).hexdigest()[:10]
 
 

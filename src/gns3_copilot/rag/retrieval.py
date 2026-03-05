@@ -6,7 +6,10 @@ from typing import Any
 
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.rag.chroma_store import get_collection_if_exists
-from gns3_copilot.rag.embeddings_factory import create_embedding_adapter, get_embedding_profile
+from gns3_copilot.rag.embeddings_factory import (
+    create_embedding_adapter,
+    get_embedding_profile,
+)
 from gns3_copilot.utils import get_config
 
 logger = setup_logger("rag_retrieval")

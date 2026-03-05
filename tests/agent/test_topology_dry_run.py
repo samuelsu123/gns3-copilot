@@ -246,13 +246,8 @@ def test_build_topology_reader_output_shape() -> None:
     assert "stats" in topology_output
 
 
-def test_dry_run_config_tool_returns_preview_and_stores_it(monkeypatch) -> None:
+def test_dry_run_config_tool_returns_preview_and_stores_it() -> None:
     """Config tool should return preview output and persist preview entries."""
-    monkeypatch.setattr(
-        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
-        lambda: "predefined_rules",
-    )
-
     simulated_topology = initialize_simulated_topology(
         ("DemoProject", "project-005", 0, 0, "opened")
     )
@@ -305,10 +300,10 @@ def test_dry_run_config_tool_returns_preview_and_stores_it(monkeypatch) -> None:
 
     assert isinstance(result, list)
     assert result[0]["status"] == "success"
-    assert result[0]["validation_status"] == "success"
+    assert result[0]["validation_status"] == "not_validated"
     assert result[0]["missing_requirements"] == []
-    assert result[0]["source"] == "fortigate_predefined_rules"
-    assert result[0]["fortigate_strategy"] == "predefined_rules"
+    assert result[0]["source"] == "fortigate_persona_only"
+    assert result[0]["fortigate_strategy"] == "persona_only"
     assert result[0]["mode"] == "dry_run_preview_only"
     assert len(simulated_topology["config_previews"]) == 1
 
@@ -316,73 +311,8 @@ def test_dry_run_config_tool_returns_preview_and_stores_it(monkeypatch) -> None:
     assert topology_output["stats"]["total_config_previews"] == 1
 
 
-def test_dry_run_config_tool_marks_incomplete_when_route_is_missing(monkeypatch) -> None:
-    """FortiGate preview should be marked incomplete when route block is missing."""
-    monkeypatch.setattr(
-        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
-        lambda: "hybrid_no_core_blocks",
-    )
-    monkeypatch.setattr(
-        "gns3_copilot.agent.topology_dry_run.is_non_baseline_post_validation_enabled",
-        lambda: True,
-    )
-
-    simulated_topology = initialize_simulated_topology(
-        ("DemoProject", "project-006", 0, 0, "opened")
-    )
-    tool_input = {
-        "project_id": "project-006",
-        "device_configs": [
-            {
-                "device_name": "FGT-1",
-                "config_commands": [
-                    "config system interface",
-                    "edit port2",
-                    "set ip 10.10.1.1/24",
-                    "next",
-                    "edit port3",
-                    "set ip 10.10.2.1/24",
-                    "next",
-                    "end",
-                    "config firewall policy",
-                    "edit 1",
-                    "set srcintf port2",
-                    "set dstintf port3",
-                    "set action accept",
-                    "next",
-                    "edit 2",
-                    "set srcintf port3",
-                    "set dstintf port2",
-                    "set action accept",
-                    "next",
-                    "end",
-                ],
-            }
-        ],
-    }
-    result, _ = execute_dry_run_tool(
-        tool_name="execute_multiple_device_config_commands",
-        tool_args={"tool_input": json.dumps(tool_input)},
-        simulated_topology=simulated_topology,
-    )
-    assert result[0]["status"] == "incomplete"
-    assert result[0]["validation_status"] == "incomplete"
-    assert result[0]["source"] == "fortigate_hybrid_no_core_blocks"
-    assert result[0]["fortigate_strategy"] == "hybrid_no_core_blocks"
-    assert "route" in result[0]["missing_requirements"]
-
-
-def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used(monkeypatch) -> None:
+def test_dry_run_config_tool_persona_only_audit_only() -> None:
     """Persona-only strategy keeps validator as audit-only and does not drive LLM decisions."""
-    monkeypatch.setattr(
-        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
-        lambda: "persona_only",
-    )
-    monkeypatch.setattr(
-        "gns3_copilot.agent.topology_dry_run.is_non_baseline_post_validation_enabled",
-        lambda: True,
-    )
-
     simulated_topology = initialize_simulated_topology(
         ("DemoProject", "project-007", 0, 0, "opened")
     )
@@ -433,53 +363,7 @@ def test_dry_run_config_tool_marks_incomplete_when_mgmt_port_is_used(monkeypatch
     )
     assert result[0]["status"] == "success"
     assert result[0]["validation_status"] == "not_validated"
-    assert result[0]["post_validation_enabled"] is False
     assert result[0]["source"] == "fortigate_persona_only"
     assert result[0]["fortigate_strategy"] == "persona_only"
-    assert result[0]["missing_requirements"] == []
-    assert result[0]["recommended_next_step"] == "none"
-
-
-def test_dry_run_config_tool_skips_validation_for_non_baseline_by_default(
-    monkeypatch,
-) -> None:
-    """Non-baseline strategy should skip hard post-validation when switch is off."""
-    monkeypatch.setattr(
-        "gns3_copilot.agent.topology_dry_run.get_fortigate_config_strategy",
-        lambda: "hybrid_no_core_blocks",
-    )
-    monkeypatch.setattr(
-        "gns3_copilot.agent.topology_dry_run.is_non_baseline_post_validation_enabled",
-        lambda: False,
-    )
-
-    simulated_topology = initialize_simulated_topology(
-        ("DemoProject", "project-008", 0, 0, "opened")
-    )
-    tool_input = {
-        "project_id": "project-008",
-        "device_configs": [
-            {
-                "device_name": "FGT-1",
-                "config_commands": [
-                    "config system interface",
-                    "edit port2",
-                    "set ip 10.10.1.1/24",
-                    "next",
-                    "end",
-                ],
-            }
-        ],
-    }
-
-    result, _ = execute_dry_run_tool(
-        tool_name="execute_multiple_device_config_commands",
-        tool_args={"tool_input": json.dumps(tool_input)},
-        simulated_topology=simulated_topology,
-    )
-
-    assert result[0]["status"] == "success"
-    assert result[0]["validation_status"] == "not_validated"
-    assert result[0]["post_validation_enabled"] is False
     assert result[0]["missing_requirements"] == []
     assert result[0]["recommended_next_step"] == "none"

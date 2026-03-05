@@ -8,7 +8,6 @@ import json
 import re
 from typing import TypedDict
 
-
 CLARIFY_OPTIONS_BLOCK_RE = re.compile(
     r"```clarify_options\s*(\{.*?\})\s*```",
     flags=re.IGNORECASE | re.DOTALL,

@@ -53,43 +53,8 @@ def _disable_topology_prompt_intent(monkeypatch) -> None:
     )
 
 
-def test_fortigate_tool_call_is_intercepted_and_requires_confirmation(monkeypatch) -> None:
-    """FortiGate config tool call should be converted into a user confirmation turn."""
-    monkeypatch.setattr(
-        agent_module, "get_fortigate_config_strategy", lambda: "hybrid_min_constraints"
-    )
-    monkeypatch.setattr(agent_module, "is_topology_dry_run_enabled", lambda: True)
-    fake_model = _FakeModel(
-        AIMessage(content="", tool_calls=[_build_config_tool_call("FGT-1")])
-    )
-    monkeypatch.setattr(
-        agent_module,
-        "create_base_model_with_tools",
-        lambda _tools, **_kwargs: fake_model,
-    )
-
-    state = {
-        "messages": [HumanMessage(content="请配置 fortigate 拓扑")],
-        "llm_calls": 0,
-        "selected_project": None,
-        "simulated_topology": None,
-    }
-
-    result = agent_module.llm_call(state)
-    message = result["messages"][0]
-
-    assert isinstance(message, AIMessage)
-    assert not message.tool_calls
-    assert "确认执行" in str(message.content)
-    assert "config system interface" in str(message.content)
-    assert result["pending_fortigate_config_call"]["name"] == "execute_multiple_device_config_commands"
-    assert "config system interface" in result["pending_fortigate_config_preview"]
-    assert fake_model.invoked == 1
-
-
-def test_persona_only_tool_call_is_intercepted_for_quality_review(monkeypatch) -> None:
-    """Persona-only strategy should ask quality review before execution confirmation."""
-    monkeypatch.setattr(agent_module, "get_fortigate_config_strategy", lambda: "persona_only")
+def test_fortigate_tool_call_is_intercepted_for_quality_review(monkeypatch) -> None:
+    """FortiGate config tool call should ask quality review before execution confirmation."""
     monkeypatch.setattr(agent_module, "is_topology_dry_run_enabled", lambda: True)
     fake_model = _FakeModel(
         AIMessage(content="", tool_calls=[_build_config_tool_call("FGT-1")])

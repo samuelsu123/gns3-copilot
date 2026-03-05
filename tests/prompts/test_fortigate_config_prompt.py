@@ -5,8 +5,6 @@ Tests for FortiGate dry-run prompt helpers.
 from langchain.messages import HumanMessage
 
 from gns3_copilot.prompts.fortigate_config_prompt import (
-    build_fortigate_dry_run_prompt,
-    collect_incomplete_fortigate_requirements,
     should_inject_fortigate_prompt,
 )
 
@@ -45,63 +43,3 @@ def test_should_not_inject_prompt_when_no_fortigate_signal() -> None:
         }
     }
     assert should_inject_fortigate_prompt(messages, topology_info=topology_info) is False
-
-
-def test_collect_incomplete_fortigate_requirements_deduplicates_items() -> None:
-    """Collector should deduplicate and merge incomplete requirements."""
-    simulated_topology = {
-        "config_previews": [
-            {
-                "device_name": "FGT-1",
-                "source": "fortigate_prompt_driven",
-                "validation_status": "incomplete",
-                "missing_requirements": ["route", "policy"],
-            },
-            {
-                "device_name": "FGT-1",
-                "source": "fortigate_prompt_driven",
-                "validation_status": "incomplete",
-                "missing_requirements": ["policy", "ip"],
-            },
-        ]
-    }
-    missing = collect_incomplete_fortigate_requirements(simulated_topology)
-    assert missing == ["route", "policy", "ip"]
-
-
-def test_collect_incomplete_fortigate_requirements_supports_new_strategy_source() -> None:
-    """Collector should handle new strategy-based preview source and strategy tag."""
-    simulated_topology = {
-        "config_previews": [
-            {
-                "device_name": "Edge-FW",
-                "source": "fortigate_hybrid_no_core_blocks",
-                "fortigate_strategy": "hybrid_no_core_blocks",
-                "validation_status": "incomplete",
-                "missing_requirements": ["ip", "route"],
-            }
-        ]
-    }
-    missing = collect_incomplete_fortigate_requirements(simulated_topology)
-    assert missing == ["ip", "route"]
-
-
-def test_build_fortigate_dry_run_prompt_contains_required_instructions() -> None:
-    """Generated prompt must include core FortiGate dry-run requirements."""
-    simulated_topology = {
-        "config_previews": [
-            {
-                "device_name": "FGT-1",
-                "source": "fortigate_prompt_driven",
-                "validation_status": "incomplete",
-                "missing_requirements": ["route"],
-            }
-        ]
-    }
-    prompt = build_fortigate_dry_run_prompt(simulated_topology=simulated_topology)
-    assert "execute_multiple_device_config_commands" in prompt
-    assert "config system interface" in prompt
-    assert "config router static" in prompt
-    assert "config firewall policy" in prompt
-    assert "Reserve `port1` for management only" in prompt
-    assert "Latest missing requirements reported by validator: route" in prompt

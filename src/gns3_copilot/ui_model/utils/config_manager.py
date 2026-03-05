@@ -47,10 +47,6 @@ Example:
 import streamlit as st
 
 from gns3_copilot.log_config import setup_logger
-from gns3_copilot.prompts.fortigate_config_strategy import (
-    DEFAULT_FORTIGATE_CONFIG_STRATEGY,
-    FORTIGATE_CONFIG_STRATEGIES,
-)
 from gns3_copilot.utils import get_config, init_config, set_config
 
 logger = setup_logger("config_manager")
@@ -106,8 +102,6 @@ CONFIG_MAP = {
     "CONTAINER_HEIGHT": "CONTAINER_HEIGHT",
     "zoom_scale_topology": "ZOOM_SCALE_TOPOLOGY",
     "TOPOLOGY_DRY_RUN": "TOPOLOGY_DRY_RUN",
-    "FORTIGATE_CONFIG_STRATEGY": "FORTIGATE_CONFIG_STRATEGY",
-    "FORTIGATE_NON_BASELINE_POST_VALIDATION": "FORTIGATE_NON_BASELINE_POST_VALIDATION",
     # Other Settings
     "LANGUAGE": "LANGUAGE",
     "TTS_HTTP_REFERER": "TTS_HTTP_REFERER",
@@ -189,7 +183,6 @@ def load_config() -> None:
             "VOICE",
             "RAG_ENABLED",
             "TOPOLOGY_DRY_RUN",
-            "FORTIGATE_NON_BASELINE_POST_VALIDATION",
         ):
             voice_str = str(config_value).lower().strip()
             if voice_str not in (
@@ -212,19 +205,6 @@ def load_config() -> None:
             is_enabled: bool = voice_str in ("true", "1", "yes", "on")
             st.session_state[st_key] = is_enabled
             logger.debug("Loaded config: %s = %s", st_key, is_enabled)
-            continue
-
-        if st_key == "FORTIGATE_CONFIG_STRATEGY":
-            strategy = str(config_value).strip().lower()
-            if strategy not in FORTIGATE_CONFIG_STRATEGIES:
-                logger.debug(
-                    "Invalid FORTIGATE_CONFIG_STRATEGY value: %s, setting to default '%s'",
-                    config_value,
-                    DEFAULT_FORTIGATE_CONFIG_STRATEGY,
-                )
-                strategy = DEFAULT_FORTIGATE_CONFIG_STRATEGY
-            st.session_state[st_key] = strategy
-            logger.debug("Loaded config: %s = %s", st_key, strategy)
             continue
 
         if st_key == "EMBEDDING_BACKEND":

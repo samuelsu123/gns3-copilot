@@ -70,10 +70,7 @@ from gns3_copilot.prompts.fortigate_config_prompt import (
     should_inject_fortigate_prompt,
 )
 from gns3_copilot.prompts.fortigate_config_strategy import (
-    FORTIGATE_STRATEGY_PERSONA_ONLY,
     build_fortigate_strategy_prompt,
-    get_fortigate_config_strategy,
-    is_non_baseline_post_validation_enabled,
 )
 from gns3_copilot.prompts.fortinet_base_prompt import (
     build_fortinet_baseline_prompt,
@@ -1019,18 +1016,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
         topology_info=topology_info,
         simulated_topology=simulated_topology,
     )
-    fortigate_strategy: str | None = None
-    non_baseline_post_validation = False
-
-    if dry_run_enabled and fortigate_context:
-        fortigate_strategy = get_fortigate_config_strategy()
-        non_baseline_post_validation = is_non_baseline_post_validation_enabled()
-
     if fortigate_context:
-        include_completeness_intent = not (
-            dry_run_enabled
-            and fortigate_strategy == FORTIGATE_STRATEGY_PERSONA_ONLY
-        )
+        include_completeness_intent = not dry_run_enabled
         context_messages.append(
             SystemMessage(
                 content=build_fortinet_baseline_prompt(
@@ -1039,21 +1026,10 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             )
         )
 
-    if dry_run_enabled and fortigate_context and fortigate_strategy is not None:
-        logger.info(
-            "Injecting FortiGate dry-run strategy prompt: strategy=%s, non_baseline_post_validation=%s",
-            fortigate_strategy,
-            non_baseline_post_validation,
-        )
+    if dry_run_enabled and fortigate_context:
+        logger.info("Injecting FortiGate dry-run persona-only strategy prompt")
         context_messages.append(
-            SystemMessage(
-                content=build_fortigate_strategy_prompt(
-                    topology_info=topology_info,
-                    simulated_topology=simulated_topology,
-                    strategy=fortigate_strategy,
-                    non_baseline_post_validation=non_baseline_post_validation,
-                )
-            )
+            SystemMessage(content=build_fortigate_strategy_prompt())
         )
 
     # Merge message lists
@@ -1410,10 +1386,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             topology_info=topology_info,
             simulated_topology=simulated_topology,
         )
-        if (
-            dry_run_enabled
-            and fortigate_strategy == FORTIGATE_STRATEGY_PERSONA_ONLY
-        ):
+        if dry_run_enabled:
             llm_response = AIMessage(
                 content=_build_fortigate_quality_review_message(preview_text)
             )

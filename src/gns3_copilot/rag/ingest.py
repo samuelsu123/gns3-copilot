@@ -10,7 +10,10 @@ from pypdf import PdfReader
 
 from gns3_copilot.log_config import setup_logger
 from gns3_copilot.rag.chroma_store import get_or_create_collection, upsert_batches
-from gns3_copilot.rag.embeddings_factory import create_embedding_adapter, get_embedding_profile
+from gns3_copilot.rag.embeddings_factory import (
+    create_embedding_adapter,
+    get_embedding_profile,
+)
 
 logger = setup_logger("rag_ingest")
 
@@ -96,10 +99,10 @@ def build_chunk_payload(
 
         for local_chunk_index, chunk in enumerate(chunks):
             ids.append(
-                (
+
                     f"{product}:{version}:{source_basename}:"
                     f"p{page_number}:c{local_chunk_index}"
-                )
+
             )
             documents.append(chunk)
             metadatas.append(
