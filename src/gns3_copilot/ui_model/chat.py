@@ -48,6 +48,7 @@ import streamlit as st
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
 from gns3_copilot.agent import agent
+from gns3_copilot.agent.gns3_copilot import INTERNAL_LLM_TAG
 from gns3_copilot.agent.prompt_trace import (
     append_fortigate_config_trace,
     end_trace_request,
@@ -746,6 +747,21 @@ if selected_p:
                             config=request_config,
                             stream_mode="messages",
                         ):
+                            # Filter out internal helper LLM calls
+                            # (intent detection, title generation, prompt generation)
+                            # that should not appear in the user-facing stream.
+                            # stream_mode="messages" yields (message, metadata) tuples.
+                            if isinstance(chunk, tuple) and len(chunk) >= 2:
+                                _stream_meta = (
+                                    chunk[1] if isinstance(chunk[1], dict) else {}
+                                )
+                                _node = _stream_meta.get("langgraph_node", "")
+                                if _node == "title_generator_node":
+                                    continue
+                                _tags = _stream_meta.get("tags") or []
+                                if INTERNAL_LLM_TAG in _tags:
+                                    continue
+
                             # 处理每个消息块
                             for msg in chunk:
                                 # with open('log.txt', "a", encoding='utf-8') as f:

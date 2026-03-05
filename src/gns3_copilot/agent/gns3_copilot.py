@@ -34,7 +34,13 @@ import sqlite3
 from typing import Annotated, Any, Literal
 
 import streamlit as st
-from langchain.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -63,24 +69,24 @@ from gns3_copilot.prompts.clarification_choice_prompt import (
 from gns3_copilot.prompts.fortigate_config_prompt import (
     should_inject_fortigate_prompt,
 )
-from gns3_copilot.prompts.fortinet_base_prompt import (
-    build_fortinet_baseline_prompt,
-)
-from gns3_copilot.prompts.native_topology_prompt import (
-    build_native_topology_generation_prompt,
-    build_topology_prompt_missing_requirements_question,
-    build_native_topology_repair_prompt,
-    build_topology_intent_detection_prompt,
-    build_topology_prompt_confirmation_message,
-    load_simple_fgt_reference,
-    parse_topology_intent_result,
-    validate_native_topology_prompt,
-)
 from gns3_copilot.prompts.fortigate_config_strategy import (
     FORTIGATE_STRATEGY_PERSONA_ONLY,
     build_fortigate_strategy_prompt,
     get_fortigate_config_strategy,
     is_non_baseline_post_validation_enabled,
+)
+from gns3_copilot.prompts.fortinet_base_prompt import (
+    build_fortinet_baseline_prompt,
+)
+from gns3_copilot.prompts.native_topology_prompt import (
+    build_native_topology_generation_prompt,
+    build_native_topology_repair_prompt,
+    build_topology_intent_detection_prompt,
+    build_topology_prompt_confirmation_message,
+    build_topology_prompt_missing_requirements_question,
+    load_simple_fgt_reference,
+    parse_topology_intent_result,
+    validate_native_topology_prompt,
 )
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
@@ -149,6 +155,12 @@ logger.debug("Available tools: %s", [tool.__class__.__name__ for tool in tools])
 FORTIGATE_CONFIG_TOOL_NAME = "execute_multiple_device_config_commands"
 FORTINET_DOC_SEARCH_TOOL_NAME = "fortinet_doc_search"
 RAG_TRUTHY_VALUES = {"1", "true", "yes", "on"}
+
+# Tag used to suppress internal helper LLM calls from stream_mode="messages" output.
+# Internal calls (intent detection, title generation, prompt generation) should not
+# appear in the user-facing streaming display.
+# 用于在 stream_mode="messages" 输出中抑制内部辅助 LLM 调用的标签。
+INTERNAL_LLM_TAG = "__internal_llm"
 
 FORTIGATE_CONFIRM_KEYWORDS = {
     "确认执行",
@@ -647,7 +659,9 @@ def _detect_topology_prompt_intent_via_llm(
         SystemMessage(content=build_topology_intent_detection_prompt()),
         HumanMessage(content=latest_query),
     ]
-    detector_response = detector_model.invoke(detector_messages)
+    detector_response = detector_model.invoke(
+        detector_messages, config={"tags": [INTERNAL_LLM_TAG]}
+    )
     _log_llm_interaction(
         tag="topology_intent_model",
         inputs=detector_messages,
@@ -694,7 +708,9 @@ def _generate_native_topology_prompt_with_llm(
         ),
         HumanMessage(content=request_text),
     ]
-    generation_response = prompt_model.invoke(generation_messages)
+    generation_response = prompt_model.invoke(
+        generation_messages, config={"tags": [INTERNAL_LLM_TAG]}
+    )
     _log_llm_interaction(
         tag="topology_prompt_model",
         inputs=generation_messages,
@@ -725,7 +741,9 @@ def _generate_native_topology_prompt_with_llm(
             ),
             HumanMessage(content=request_text),
         ]
-        repair_response = prompt_model.invoke(repair_messages)
+        repair_response = prompt_model.invoke(
+            repair_messages, config={"tags": [INTERNAL_LLM_TAG]}
+        )
         _log_llm_interaction(
             tag=f"topology_prompt_model_repair_{attempt}",
             inputs=repair_messages,
@@ -1481,7 +1499,10 @@ def generate_title(
             )
             title_response = title_model.invoke(
                 title_prompt_messages,
-                config={"configurable": {"foo_temperature": 1.0}},
+                config={
+                    "configurable": {"foo_temperature": 1.0},
+                    "tags": [INTERNAL_LLM_TAG],
+                },
             )
             _log_llm_interaction(
                 tag="title_model",
