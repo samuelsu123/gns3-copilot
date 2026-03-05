@@ -4,6 +4,7 @@ Tests for FortiGate execution confirmation gate in agent llm_call flow.
 
 import json
 
+import pytest
 from langchain.messages import AIMessage, HumanMessage
 
 from gns3_copilot.agent import gns3_copilot as agent_module
@@ -41,6 +42,15 @@ def _build_config_tool_call(device_name: str) -> dict:
         "id": "call_test_config_001",
         "type": "tool_call",
     }
+
+
+@pytest.fixture(autouse=True)
+def _disable_topology_prompt_intent(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent_module,
+        "_detect_topology_prompt_intent_via_llm",
+        lambda **_kwargs: False,
+    )
 
 
 def test_fortigate_tool_call_is_intercepted_and_requires_confirmation(monkeypatch) -> None:

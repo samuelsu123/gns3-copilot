@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
 from gns3_copilot.agent import gns3_copilot as agent_module
@@ -15,6 +16,15 @@ class _FakeModel:
     def invoke(self, _messages):
         self.invoked += 1
         return self._response
+
+
+@pytest.fixture(autouse=True)
+def _disable_topology_prompt_intent(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent_module,
+        "_detect_topology_prompt_intent_via_llm",
+        lambda **_kwargs: False,
+    )
 
 
 def test_fortinet_query_auto_triggers_retrieval_tool(monkeypatch) -> None:

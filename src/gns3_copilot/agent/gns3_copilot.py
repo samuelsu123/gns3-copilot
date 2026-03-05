@@ -34,7 +34,7 @@ import sqlite3
 from typing import Annotated, Any, Literal
 
 import streamlit as st
-from langchain.messages import AIMessage, AnyMessage, SystemMessage, ToolMessage
+from langchain.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -42,6 +42,7 @@ from langgraph.managed.is_last_step import RemainingSteps
 from typing_extensions import TypedDict
 
 from gns3_copilot.agent.model_factory import (
+    create_base_model,
     create_base_model_with_tools,
     create_title_model,
 )
@@ -64,6 +65,16 @@ from gns3_copilot.prompts.fortigate_config_prompt import (
 )
 from gns3_copilot.prompts.fortinet_base_prompt import (
     build_fortinet_baseline_prompt,
+)
+from gns3_copilot.prompts.native_topology_prompt import (
+    build_native_topology_generation_prompt,
+    build_topology_prompt_missing_requirements_question,
+    build_native_topology_repair_prompt,
+    build_topology_intent_detection_prompt,
+    build_topology_prompt_confirmation_message,
+    load_simple_fgt_reference,
+    parse_topology_intent_result,
+    validate_native_topology_prompt,
 )
 from gns3_copilot.prompts.fortigate_config_strategy import (
     FORTIGATE_STRATEGY_PERSONA_ONLY,
@@ -166,6 +177,23 @@ FORTIGATE_QUALITY_PASS_KEYWORDS = {
     "ok",
     "okay",
 }
+TOPOLOGY_PROMPT_CONFIRM_KEYWORDS = {
+    "是",
+    "好的",
+    "可以",
+    "生成",
+    "yes",
+    "y",
+}
+TOPOLOGY_PROMPT_DECLINE_KEYWORDS = {
+    "否",
+    "不用",
+    "不需要",
+    "no",
+    "n",
+}
+TOPOLOGY_INTENT_MIN_CONFIDENCE = 0.55
+TOPOLOGY_PROMPT_MAX_REPAIR_ATTEMPTS = 2
 
 
 # Define state
@@ -230,6 +258,14 @@ class MessagesState(TypedDict):
     # Human-readable preview for pending FortiGate quality review
     # 待质量确认 FortiGate CLI 命令的可读预览
     pending_fortigate_quality_preview: str | None
+
+    # Pending topology prompt generation request waiting for user yes/no confirmation
+    # 等待用户确认是否生成拓扑 prompt 的待处理请求
+    pending_topology_prompt_request: dict | None
+
+    # Extra context attached to topology prompt pending request
+    # 拓扑 prompt 待处理请求附加上下文
+    pending_topology_prompt_context: dict | None
 
 
 def _normalize_content_blocks_to_text(content: list[Any]) -> str:
@@ -569,6 +605,149 @@ def _build_pending_confirmation_reminder(preview: str) -> str:
     return message
 
 
+def _resolve_topology_prompt_confirmation(
+    text: str,
+) -> Literal["confirm", "decline", "unknown"]:
+    token = _normalize_confirmation_token(text)
+    if not token:
+        return "unknown"
+    if token in {item.replace(" ", "") for item in TOPOLOGY_PROMPT_CONFIRM_KEYWORDS}:
+        return "confirm"
+    if token in {item.replace(" ", "") for item in TOPOLOGY_PROMPT_DECLINE_KEYWORDS}:
+        return "decline"
+    return "unknown"
+
+
+def _build_pending_topology_prompt_reminder() -> str:
+    return (
+        "我还在等待你的确认：是否要生成完整的原生 gns3-copilot 拓扑部署 prompt？\n"
+        "请回复 `是` / `yes` 或 `否` / `no`。"
+    )
+
+
+def _detect_topology_prompt_intent_via_llm(
+    messages: list[AnyMessage] | None,
+    config: RunnableConfig | None = None,
+) -> bool:
+    latest_query = _latest_human_text(messages)
+    if not latest_query:
+        return False
+
+    trace_thread_id, trace_request_id = _extract_trace_context(config)
+    trace_context = (
+        (trace_thread_id, trace_request_id)
+        if trace_thread_id and trace_request_id
+        else None
+    )
+    detector_model = create_base_model(
+        trace_context=trace_context,
+        model_tag="topology_intent_model",
+    )
+    detector_messages: list[AnyMessage] = [
+        SystemMessage(content=build_topology_intent_detection_prompt()),
+        HumanMessage(content=latest_query),
+    ]
+    detector_response = detector_model.invoke(detector_messages)
+    _log_llm_interaction(
+        tag="topology_intent_model",
+        inputs=detector_messages,
+        output=detector_response,
+        config=config,
+    )
+
+    detector_text = _stringify_message_content(getattr(detector_response, "content", ""))
+    intent_flag, confidence = parse_topology_intent_result(detector_text)
+    logger.info(
+        "Topology intent detection: intent=%s confidence=%.2f query=%s",
+        intent_flag,
+        confidence,
+        latest_query[:120],
+    )
+    return bool(intent_flag and confidence >= TOPOLOGY_INTENT_MIN_CONFIDENCE)
+
+
+def _generate_native_topology_prompt_with_llm(
+    user_request: str,
+    config: RunnableConfig | None = None,
+) -> tuple[str, list[str]]:
+    request_text = str(user_request or "").strip()
+    if not request_text:
+        return "未检测到可生成拓扑 prompt 的需求描述，请提供更具体的拓扑目标。"
+
+    trace_thread_id, trace_request_id = _extract_trace_context(config)
+    trace_context = (
+        (trace_thread_id, trace_request_id)
+        if trace_thread_id and trace_request_id
+        else None
+    )
+    prompt_model = create_base_model(
+        trace_context=trace_context,
+        model_tag="topology_prompt_model",
+    )
+    reference_prompt = load_simple_fgt_reference()
+    generation_messages: list[AnyMessage] = [
+        SystemMessage(
+            content=build_native_topology_generation_prompt(
+                user_request=request_text,
+                reference_prompt=reference_prompt,
+            )
+        ),
+        HumanMessage(content=request_text),
+    ]
+    generation_response = prompt_model.invoke(generation_messages)
+    _log_llm_interaction(
+        tag="topology_prompt_model",
+        inputs=generation_messages,
+        output=generation_response,
+        config=config,
+    )
+
+    generated_text = _stringify_message_content(
+        getattr(generation_response, "content", "")
+    ).strip()
+    validation = validate_native_topology_prompt(
+        text=generated_text,
+        user_request=request_text,
+    )
+    if validation.get("ok"):
+        return generated_text, []
+
+    candidate_text = generated_text
+    missing_requirements = list(validation.get("missing_requirements", []))
+    for attempt in range(1, TOPOLOGY_PROMPT_MAX_REPAIR_ATTEMPTS + 1):
+        repair_messages: list[AnyMessage] = [
+            SystemMessage(
+                content=build_native_topology_repair_prompt(
+                    user_request=request_text,
+                    previous_output=candidate_text or "(empty)",
+                    missing_requirements=missing_requirements,
+                )
+            ),
+            HumanMessage(content=request_text),
+        ]
+        repair_response = prompt_model.invoke(repair_messages)
+        _log_llm_interaction(
+            tag=f"topology_prompt_model_repair_{attempt}",
+            inputs=repair_messages,
+            output=repair_response,
+            config=config,
+        )
+        candidate_text = _stringify_message_content(
+            getattr(repair_response, "content", "")
+        ).strip()
+        validation = validate_native_topology_prompt(
+            text=candidate_text,
+            user_request=request_text,
+        )
+        if validation.get("ok"):
+            return candidate_text, []
+        missing_requirements = list(validation.get("missing_requirements", []))
+
+    if candidate_text:
+        return candidate_text, missing_requirements
+    return "拓扑 prompt 生成失败，请补充更明确的节点、链路和配置目标。", missing_requirements
+
+
 def _is_human_message(message: AnyMessage | None) -> bool:
     if message is None:
         return False
@@ -868,13 +1047,15 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
         [SystemMessage(content=current_prompt)] + context_messages + normalized_messages
     )
     # print(full_messages)
+    messages = state.get("messages", [])
+    last_message = messages[-1] if isinstance(messages, list) and messages else None
+    latest_human_text = _latest_human_text(messages)
 
     quality_pending_reset: dict[str, Any] = {}
     pending_quality_call = state.get("pending_fortigate_quality_call")
     pending_quality_preview = str(state.get("pending_fortigate_quality_preview", "") or "")
     if isinstance(pending_quality_call, dict):
-        latest_text = _latest_human_text(state.get("messages", []))
-        quality_decision = _resolve_fortigate_quality_review(latest_text)
+        quality_decision = _resolve_fortigate_quality_review(latest_human_text)
         if quality_decision == "pass":
             confirmation_message = AIMessage(
                 content=_build_fortigate_confirmation_message(pending_quality_preview)
@@ -932,8 +1113,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
     pending_call = state.get("pending_fortigate_config_call")
     pending_preview = str(state.get("pending_fortigate_config_preview", "") or "")
     if isinstance(pending_call, dict):
-        latest_text = _latest_human_text(state.get("messages", []))
-        decision = _resolve_fortigate_confirmation(latest_text)
+        decision = _resolve_fortigate_confirmation(latest_human_text)
         if decision == "confirm":
             confirmed_message = AIMessage(content="", tool_calls=[pending_call])
             _log_llm_interaction(
@@ -996,8 +1176,145 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
-    messages = state.get("messages", [])
-    last_message = messages[-1] if isinstance(messages, list) and messages else None
+    pending_topology_prompt = state.get("pending_topology_prompt_request")
+    pending_topology_context = state.get("pending_topology_prompt_context")
+    if isinstance(pending_topology_prompt, dict):
+        topology_decision = _resolve_topology_prompt_confirmation(latest_human_text)
+        if topology_decision == "confirm":
+            request_text = str(
+                pending_topology_prompt.get("user_request", latest_human_text)
+            ).strip() or latest_human_text
+            generated_prompt, missing_requirements = _generate_native_topology_prompt_with_llm(
+                user_request=request_text,
+                config=config,
+            )
+            if missing_requirements:
+                missing_message = AIMessage(
+                    content=build_topology_prompt_missing_requirements_question(
+                        user_request=request_text,
+                        missing_requirements=missing_requirements,
+                    )
+                )
+                result = {
+                    "messages": [missing_message],
+                    "topology_info": topology_info,
+                    "pending_topology_prompt_request": {
+                        "user_request": request_text,
+                    },
+                    "pending_topology_prompt_context": {
+                        "missing_requirements": missing_requirements,
+                    },
+                    "pending_fortigate_config_call": None,
+                    "pending_fortigate_config_preview": None,
+                    "pending_fortigate_quality_call": None,
+                    "pending_fortigate_quality_preview": None,
+                }
+                if quality_pending_reset:
+                    result.update(quality_pending_reset)
+                if dry_run_enabled and simulated_topology is not None:
+                    result["simulated_topology"] = simulated_topology
+                return result
+            generated_message = AIMessage(content=generated_prompt)
+            result = {
+                "messages": [generated_message],
+                "topology_info": topology_info,
+                "pending_topology_prompt_request": None,
+                "pending_topology_prompt_context": None,
+                "pending_fortigate_config_call": None,
+                "pending_fortigate_config_preview": None,
+                "pending_fortigate_quality_call": None,
+                "pending_fortigate_quality_preview": None,
+            }
+            if quality_pending_reset:
+                result.update(quality_pending_reset)
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
+
+        if topology_decision == "decline":
+            decline_message = AIMessage(
+                content=(
+                    "好的，我先不生成完整拓扑 prompt。"
+                    "我会继续按常规方式协助你，请告诉我下一步要做什么。"
+                )
+            )
+            _log_llm_interaction(
+                tag="base_model",
+                inputs=full_messages,
+                output=decline_message,
+                config=config,
+            )
+            result = {
+                "messages": [decline_message],
+                "topology_info": topology_info,
+                "pending_topology_prompt_request": None,
+                "pending_topology_prompt_context": None,
+            }
+            if quality_pending_reset:
+                result.update(quality_pending_reset)
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
+
+        reminder_message = AIMessage(content=_build_pending_topology_prompt_reminder())
+        _log_llm_interaction(
+            tag="base_model",
+            inputs=full_messages,
+            output=reminder_message,
+            config=config,
+        )
+        result = {
+            "messages": [reminder_message],
+            "topology_info": topology_info,
+            "pending_topology_prompt_request": pending_topology_prompt,
+            "pending_topology_prompt_context": pending_topology_context,
+        }
+        if quality_pending_reset:
+            result.update(quality_pending_reset)
+        if dry_run_enabled and simulated_topology is not None:
+            result["simulated_topology"] = simulated_topology
+        return result
+
+    should_ask_topology_confirmation = False
+    if _is_human_message(last_message) and not quality_pending_reset:
+        try:
+            should_ask_topology_confirmation = _detect_topology_prompt_intent_via_llm(
+                messages=messages,
+                config=config,
+            )
+        except Exception as exc:
+            logger.warning("Topology intent detection failed: %s", exc)
+
+    if should_ask_topology_confirmation and latest_human_text:
+        confirmation_message = AIMessage(
+            content=build_topology_prompt_confirmation_message(latest_human_text)
+        )
+        _log_llm_interaction(
+            tag="base_model",
+            inputs=full_messages,
+            output=confirmation_message,
+            config=config,
+        )
+        result = {
+            "messages": [confirmation_message],
+            "topology_info": topology_info,
+            "pending_topology_prompt_request": {
+                "user_request": latest_human_text,
+            },
+            "pending_topology_prompt_context": {
+                "selected_project": selected_p,
+                "has_topology_info": isinstance(topology_info, dict),
+            },
+            "pending_fortigate_config_call": None,
+            "pending_fortigate_config_preview": None,
+            "pending_fortigate_quality_call": None,
+            "pending_fortigate_quality_preview": None,
+        }
+        if quality_pending_reset:
+            result.update(quality_pending_reset)
+        if dry_run_enabled and simulated_topology is not None:
+            result["simulated_topology"] = simulated_topology
+        return result
 
     rag_tool_result = _extract_latest_fortinet_doc_result(messages)
     if isinstance(rag_tool_result, dict) and _safe_bool(
