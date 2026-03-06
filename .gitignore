@@ -192,4 +192,4 @@ test/session_metadata.sqlite
 notes/*.md
 
 .junie/*
-prompt_trace/
+prompt_trace*/

@@ -113,7 +113,7 @@ START --> llm_call --> [决策点]
 session = {
     "user_request": request_text,
     "active_skill_names": ["topology-prompt-orchestrator", ...],  # 条件加载 fortigate-topology
-    "draft_spec": draft_spec,
+    "draft_spec": draft_spec,  # 含 fortigate_count、fortigates 列表等结构化字段
     "round": 0,
     "phase": "topology_overview",       # 当前阶段
     "confirmed_layers": {},             # 已确认的各层输出
@@ -124,6 +124,18 @@ session = {
 - **始终加载**：`topology-prompt-orchestrator`（通用编排器）
 - **条件加载**：`fortigate-topology`（仅 `is_fortigate_request()` 为 True 时）
 
+### 5.0.1 Prompt 注入优化
+
+为降低 Token 消耗，不同 Phase 注入的上下文量不同：
+
+| 内容 | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
+|------|---------|---------|---------|---------|
+| 风格参考 (`simple_fgt.txt`) | 完整注入 | 不注入 | 不注入 | 不注入 |
+| SKILL.md 文档 | 完整注入 | 仅 Phase 2 片段 | 仅 Phase 3 片段 | 仅 Phase 4 片段 |
+| `[已确认 - xxx]` 前序输出 | 无 | Phase 1 输出 | Phase 1+2 输出 | Phase 1+2+3 输出 |
+
+裁剪通过 `_extract_skill_section_for_phase()` 实现，按 `## Phase N` / `### Phase N` 标题切分，保留 preamble + 当前阶段段落。
+
 ### 5.1 Phase 1: 拓扑概要（`topology_overview`）
 
 LLM 基于 `build_topology_skill_phase_prompt(phase="topology_overview", ...)` 生成：
@@ -131,6 +143,8 @@ LLM 基于 `build_topology_skill_phase_prompt(phase="topology_overview", ...)` �
 - 设备类型与数量
 - 业务网段概要（用户未指定时自动分配默认网段）
 - 互联方式与上网策略
+
+**此阶段注入完整风格参考和完整 SKILL 文档**，为 LLM 提供全貌。
 
 校验：`validate_phase_output(phase="topology_overview")` — 检查 `## 拓扑概要` 章节存在。
 
@@ -155,10 +169,13 @@ LLM 基于已确认的 Phase 1+2 内容生成：
 - `## 执行规则`
 - `## CRITICAL: 部署完成检查清单`
 
+**SKILL 文档仅注入 Phase 3 相关片段**（含澄清规则段），风格参考不再注入。
+
 校验：`validate_phase_output(phase="execution_steps")` — 检查三个章节存在。
 **条件校验**（仅 FortiGate 场景）：
 - 检查 `config system interface`、`config router static`、`config firewall policy` 等关键标记
 - **VPN 场景额外检查**（仅 `is_vpn_request()` 为 True 时）：`config vpn ipsec phase1-interface`、`phase2-interface`、`set psksecret`
+- **IKE 版本约束**：当拓扑概要指定 IKEv2 时，FortiGate Skill 要求显式设置 `set ike-version 2`
 
 校验失败时自动触发修复循环（最多 `TOPOLOGY_PROMPT_MAX_REPAIR_ATTEMPTS` 次）。
 
@@ -325,3 +342,6 @@ Phase 1 ──确认──> Phase 2 ──确认──> Phase 3 ──确认─�
 6. **全链路追踪**：request_id 贯穿 UI → Agent → LLM → 工具
 7. **流式响应**：实时显示 LLM 输出和工具调用过程
 8. **状态持久化**：LangGraph SQLite checkpointer 保存对话状态，支持断点续接
+9. **按阶段裁剪上下文**：风格参考仅 Phase 1 注入，SKILL 文档按阶段裁剪（Phase 2+ 节省 40-70% token），避免重复传输
+10. **port1 管理口规范**：风格参考模板、FortiGate Baseline Rules、FortiGate Skill 三处一致：port1 仅管理用途，业务口从 port2 起
+11. **多设备 spec 提取**：`topology_spec_model` 支持 `fortigate_count` 和 `fortigates` 列表，适配多 FortiGate 站点互联场景

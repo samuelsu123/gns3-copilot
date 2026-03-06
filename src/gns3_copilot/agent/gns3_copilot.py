@@ -130,20 +130,20 @@ tools = [
     GNS3TemplateTool(),  # Get GNS3 node templates 获取 GNS3 节点模板
     GNS3TopologyTool(),  # Read GNS3 topology information 读取 GNS3 拓扑信息
     FortinetDocSearchTool(),  # Search Fortinet docs from local ChromaDB
-                             # 从本地 ChromaDB 检索 Fortinet 文档
+    # 从本地 ChromaDB 检索 Fortinet 文档
     GNS3CreateNodeTool(),  # Create new nodes in GNS3 在 GNS3 中创建新节点
     GNS3LinkTool(),  # Create links between nodes 在节点之间创建链路
     GNS3StartNodeTool(),  # Start GNS3 nodes 启动 GNS3 节点
     ExecuteMultipleDeviceCommands(),  # Execute show/display commands on multiple devices
-                                       # 在多个设备上执行 show/display 命令
+    # 在多个设备上执行 show/display 命令
     ExecuteMultipleDeviceConfigCommands(),  # Execute configuration commands on multiple devices
-                                             # 在多个设备上执行配置命令
+    # 在多个设备上执行配置命令
     VPCSMultiCommands(),  # Execute VPCS commands on multiple devices
-                          # 在多个设备上执行 VPCS 命令
+    # 在多个设备上执行 VPCS 命令
     LinuxTelnetBatchTool(),  # Execute Linux commands via Telnet on multiple devices
-                              # 通过 Telnet 在多个设备上执行 Linux 命令
+    # 通过 Telnet 在多个设备上执行 Linux 命令
     GNS3CreateAreaDrawingTool(),  # Create area drawings in GNS3 topologies
-                                   # 在 GNS3 拓扑中创建区域绘图
+    # 在 GNS3 拓扑中创建区域绘图
 ]
 # Augment the LLM with tools
 # 使用工具增强 LLM
@@ -444,7 +444,9 @@ def _normalize_confirmation_token(text: str) -> str:
     return normalized.replace(" ", "")
 
 
-def _resolve_fortigate_confirmation(text: str) -> Literal["confirm", "cancel", "unknown"]:
+def _resolve_fortigate_confirmation(
+    text: str,
+) -> Literal["confirm", "cancel", "unknown"]:
     token = _normalize_confirmation_token(text)
     if not token:
         return "unknown"
@@ -741,7 +743,9 @@ def _detect_topology_prompt_intent_via_llm(
         config=config,
     )
 
-    detector_text = _stringify_message_content(getattr(detector_response, "content", ""))
+    detector_text = _stringify_message_content(
+        getattr(detector_response, "content", "")
+    )
     intent_flag, confidence = parse_topology_intent_result(detector_text)
     logger.info(
         "Topology intent detection: intent=%s confidence=%.2f query=%s",
@@ -759,17 +763,21 @@ def _build_topology_spec_extraction_prompt() -> str:
         "仅输出 JSON，不要输出解释。\n"
         "字段约束：\n"
         "- uses_fortigate: bool\n"
-        "- lan_count: int 或 null（1-4）\n"
+        "- fortigate_count: int 或 null（FortiGate 数量，如 1、2）\n"
+        "- fortigates: 列表或 null，每项 {name, role, template}，"
+        '如 [{"name": "HQ-FGT", "role": "总部", "template": "FortiGate7.6.6模板"}]\n'
+        "- lan_count: int 或 null（1-4，所有站点总 LAN 网段数）\n"
         "- use_switch: bool 或 null（未提及时 null）\n"
         "- use_nat: bool 或 null（未提及时 null）\n"
         "- include_license: bool 或 null（仅 FortiGate 场景）\n"
-        "- fortigate_name: string 或 null\n"
-        "- fortigate_template: string 或 null\n"
         "- dns_server: string 或 null\n"
         "- license_restore_command: string 或 null\n"
-        "输出示例：\n"
-        '{"uses_fortigate": true, "lan_count": 2, "use_switch": null, "use_nat": null, '
-        '"include_license": null, "fortigate_name": "fortigate1", "fortigate_template": "FortiGate7.6.6模板"}'
+        "输出示例（多台 FortiGate）：\n"
+        '{"uses_fortigate": true, "fortigate_count": 2, '
+        '"fortigates": [{"name": "HQ-FGT", "role": "总部", "template": "FortiGate7.6.6模板"}, '
+        '{"name": "BR-FGT", "role": "分支", "template": "FortiGate7.6.6模板"}], '
+        '"lan_count": 3, "use_switch": null, "use_nat": null, '
+        '"include_license": null, "dns_server": null, "license_restore_command": null}'
     )
 
 
@@ -1088,7 +1096,9 @@ def _extract_latest_fortinet_doc_result(
 
 
 def _build_strict_no_evidence_message(payload: dict[str, Any]) -> str:
-    product = str(payload.get("product", get_config("RAG_DEFAULT_PRODUCT", "fortigate")))
+    product = str(
+        payload.get("product", get_config("RAG_DEFAULT_PRODUCT", "fortigate"))
+    )
     version = str(payload.get("version", get_config("RAG_DEFAULT_VERSION", "7.6.6")))
 
     clarify_payload = {
@@ -1179,9 +1189,7 @@ def _log_llm_interaction(
     thread_id, request_id = _extract_trace_context(config)
 
     if not thread_id or not request_id:
-        logger.info(
-            "[LLM_TRACE][%s] skipped: missing thread_id/trace_request_id", tag
-        )
+        logger.info("[LLM_TRACE][%s] skipped: missing thread_id/trace_request_id", tag)
         return
 
     try:
@@ -1324,9 +1332,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     SystemMessage(content=f"Current Context: {project_info}")
                 )
 
-    context_messages.append(
-        SystemMessage(content=build_clarification_choice_prompt())
-    )
+    context_messages.append(SystemMessage(content=build_clarification_choice_prompt()))
 
     fortigate_context = should_inject_fortigate_prompt(
         messages=state.get("messages", []),
@@ -1367,7 +1373,9 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
     # 如果质量审核待处理，优先解析用户回复。
     quality_pending_reset: dict[str, Any] = {}
     pending_quality_call = state.get("pending_fortigate_quality_call")
-    pending_quality_preview = str(state.get("pending_fortigate_quality_preview", "") or "")
+    pending_quality_preview = str(
+        state.get("pending_fortigate_quality_preview", "") or ""
+    )
     if isinstance(pending_quality_call, dict):
         quality_decision = _resolve_fortigate_quality_review(latest_human_text)
         if quality_decision == "pass":
@@ -1681,9 +1689,12 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
     if isinstance(pending_topology_prompt, dict):
         topology_decision = _resolve_topology_prompt_confirmation(latest_human_text)
         if topology_decision == "confirm":
-            request_text = str(
-                pending_topology_prompt.get("user_request", latest_human_text)
-            ).strip() or latest_human_text
+            request_text = (
+                str(
+                    pending_topology_prompt.get("user_request", latest_human_text)
+                ).strip()
+                or latest_human_text
+            )
             # 先抽取草案用于技能选择，再由 skill.md 驱动 LLM 执行主流程。
             draft_spec = _extract_topology_prompt_spec_with_llm(
                 user_request=request_text,
@@ -2098,7 +2109,9 @@ def generate_title(
         title_prompt_messages = [
             SystemMessage(content=TITLE_PROMPT),
             messages[0],  # User's first message 用户的第一条消息
-            messages[-1],  # Assistant's final response in this turn 助手在此轮的最终响应
+            messages[
+                -1
+            ],  # Assistant's final response in this turn 助手在此轮的最终响应
         ]
         logger.debug("summary_messages for title generation: %s", title_prompt_messages)
 
@@ -2139,7 +2152,7 @@ def generate_title(
             # Safety: truncate long titles and avoid line breaks
             # 安全处理：截断过长标题并避免换行
             if len(new_title) > 40:  # Increased limit for better Chinese support
-                                      # 增加限制以更好地支持中文
+                # 增加限制以更好地支持中文
                 new_title = new_title[:38] + "..."
 
             # Remove unwanted characters
@@ -2329,9 +2342,9 @@ agent_builder.add_conditional_edges(
     should_continue,
     {
         "tool_node": "tool_node",  # Route to tool execution if LLM requested tools
-                                    # 如果 LLM 请求工具则路由到工具执行
+        # 如果 LLM 请求工具则路由到工具执行
         "title_generator_node": "title_generator_node",  # Generate title on first interaction
-                                                          # 在第一次交互时生成标题
+        # 在第一次交互时生成标题
         END: END,  # End conversation if no tools needed 如果不需要工具则结束对话
     },
 )
@@ -2344,7 +2357,7 @@ agent_builder.add_conditional_edges(
     recursion_limit_continue,
     {
         "llm_call": "llm_call",  # Continue to LLM if tools executed and steps remain
-                                  # 如果工具已执行且步骤剩余则继续到 LLM
+        # 如果工具已执行且步骤剩余则继续到 LLM
         END: END,  # End conversation to prevent infinite loops 结束对话以防止无限循环
     },
 )
@@ -2394,9 +2407,11 @@ def get_agent():
     )
 
 
-langgraph_checkpointer = get_checkpointer()  # Cached SqliteSaver instance 缓存的 SqliteSaver 实例
+langgraph_checkpointer = (
+    get_checkpointer()
+)  # Cached SqliteSaver instance 缓存的 SqliteSaver 实例
 
 # Streamlit UI use
 # Streamlit UI 使用
 agent = get_agent()  # Cached compiled LangGraph agent (with persistence)
-                     # 缓存的编译后 LangGraph 代理（带持久化）
+# 缓存的编译后 LangGraph 代理（带持久化）

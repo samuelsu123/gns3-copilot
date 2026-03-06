@@ -41,6 +41,7 @@ description: FortiGate 拓扑与配置子技能。用于 FortiGate 相关场景�
   - `config vpn ipsec phase1-interface`
   - `config vpn ipsec phase2-interface`
   - `set psksecret`
+  - 当拓扑概要指定 IKEv2 时，必须显式设置 `set ike-version 2`（FortiGate 默认可能为 IKEv1）
 - 双边内网需可互访的防火墙策略
 - "本地上网仍走本地 WAN"必须被保留，不可被全局 VPN 路由覆盖
 

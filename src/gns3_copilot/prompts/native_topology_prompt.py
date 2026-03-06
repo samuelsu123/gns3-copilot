@@ -98,7 +98,9 @@ def build_topology_skill_generation_prompt(
     for skill_name, skill_doc in active_skill_documents:
         if not skill_doc.strip():
             continue
-        skill_blocks.append(f"[Skill: {skill_name}]\n```markdown\n{skill_doc.strip()}\n```")
+        skill_blocks.append(
+            f"[Skill: {skill_name}]\n```markdown\n{skill_doc.strip()}\n```"
+        )
     skills_text = "\n\n".join(skill_blocks)
 
     reference_block = ""
@@ -183,6 +185,83 @@ def _phase_instruction(phase: str, confirmed_layers: dict[str, str]) -> str:
     )
 
 
+def _extract_skill_section_for_phase(skill_doc: str, phase: str) -> str:
+    """Extract only the phase-relevant section from a skill markdown document.
+
+    For Phase 1 (overview), the full document is returned so the LLM has the
+    complete picture.  For later phases only the matching ``### Phase N`` or
+    ``## Phase N`` section (plus any leading preamble like the description
+    header) is kept, significantly reducing token cost.
+    """
+    if phase == TOPOLOGY_PHASE_OVERVIEW:
+        return skill_doc
+
+    # Map phase to heading keywords used in SKILL.md files.
+    phase_heading_keywords: dict[str, list[str]] = {
+        TOPOLOGY_PHASE_NODE_LINK: ["Phase 2", "node_and_link_plan", "节点与链路"],
+        TOPOLOGY_PHASE_EXECUTION: ["Phase 3", "execution_steps", "执行步骤"],
+        TOPOLOGY_PHASE_COMPLETED: ["Phase 4", "completed", "合并输出"],
+    }
+    keywords = phase_heading_keywords.get(phase, [])
+    if not keywords:
+        return skill_doc
+
+    lines = skill_doc.split("\n")
+
+    # Always keep the front-matter / preamble (everything before the first
+    # ``## Phase`` heading).
+    preamble_lines: list[str] = []
+    section_lines: list[str] = []
+    in_target_section = False
+    preamble_ended = False
+
+    for line in lines:
+        stripped = line.strip()
+        is_phase_heading = stripped.startswith("#") and any(
+            kw in stripped for kw in ("Phase 1", "Phase 2", "Phase 3", "Phase 4")
+        )
+
+        if is_phase_heading:
+            preamble_ended = True
+            # Check if this heading matches our target phase.
+            if any(kw in stripped for kw in keywords):
+                in_target_section = True
+                section_lines.append(line)
+                continue
+            else:
+                if in_target_section:
+                    # We've left the target section — stop.
+                    break
+                continue
+
+        if not preamble_ended:
+            preamble_lines.append(line)
+        elif in_target_section:
+            section_lines.append(line)
+
+    # Also capture trailing rules sections (e.g. "## 信息不足时的澄清规则")
+    # only for execution phase where they are most relevant.
+    if phase == TOPOLOGY_PHASE_EXECUTION:
+        in_trailing = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#") and "澄清" in stripped:
+                in_trailing = True
+            if in_trailing:
+                section_lines.append(line)
+
+    if not section_lines:
+        # Fallback: return full doc if extraction failed.
+        return skill_doc
+
+    result_parts = []
+    preamble_text = "\n".join(preamble_lines).strip()
+    if preamble_text:
+        result_parts.append(preamble_text)
+    result_parts.append("\n".join(section_lines).strip())
+    return "\n\n".join(result_parts)
+
+
 def build_topology_skill_phase_prompt(
     *,
     user_request: str,
@@ -191,18 +270,25 @@ def build_topology_skill_phase_prompt(
     active_skill_documents: list[tuple[str, str]],
     reference_prompt: str = "",
 ) -> str:
-    """Build a phase-aware system prompt for progressive topology generation."""
+    """Build a phase-aware system prompt for progressive topology generation.
+
+    Optimisations vs. sending the full context every time:
+    - Style reference (simple_fgt.txt) is only injected in Phase 1.
+      Later phases already have confirmed prior output as context.
+    - SKILL documents are trimmed to the current-phase section for Phase 2+.
+    """
     skill_blocks: list[str] = []
     for skill_name, skill_doc in active_skill_documents:
-        if not skill_doc.strip():
+        trimmed = _extract_skill_section_for_phase(skill_doc.strip(), phase)
+        if not trimmed:
             continue
-        skill_blocks.append(
-            f"[Skill: {skill_name}]\n```markdown\n{skill_doc.strip()}\n```"
-        )
+        skill_blocks.append(f"[Skill: {skill_name}]\n```markdown\n{trimmed}\n```")
     skills_text = "\n\n".join(skill_blocks)
 
+    # Only inject the full style reference in Phase 1.  Later phases have
+    # confirmed_layers which serve as concrete context.
     reference_block = ""
-    if reference_prompt.strip():
+    if phase == TOPOLOGY_PHASE_OVERVIEW and reference_prompt.strip():
         reference_block = (
             "风格参考（仅作结构参考，内容必须按当前需求重写）：\n"
             f"```text\n{reference_prompt.strip()}\n```\n\n"

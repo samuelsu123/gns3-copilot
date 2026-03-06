@@ -10,9 +10,9 @@
 5. switch1 - Ethernet switch模板
 
 ## 链路清单
-1. PC1端口0 连接 fortigate1的Ethernet1
-2. PC2端口0 连接 fortigate1的Ethernet2
-3. fortigate1的Ethernet0 连接 switch1的Ethernet0
+1. PC1端口0 连接 fortigate1的port2
+2. PC2端口0 连接 fortigate1的port3
+3. fortigate1的port1 连接 switch1的Ethernet0
 4. nat1端口0 连接 switch1的Ethernet1
 
 ## 执行步骤
@@ -25,9 +25,9 @@
 
 ### 步骤2：创建所有链路
 - 使用 create_link 创建以下4条链路：
-  * PC1端口0 ↔ fortigate1的Ethernet1
-  * PC2端口0 ↔ fortigate1的Ethernet2
-  * fortigate1的Ethernet0 ↔ switch1的Ethernet0
+  * PC1端口0 ↔ fortigate1的port2
+  * PC2端口0 ↔ fortigate1的port3
+  * fortigate1的port1 ↔ switch1的Ethernet0
   * nat1端口0 ↔ switch1的Ethernet1
 
 ### 步骤3：等待所有节点就绪
@@ -39,17 +39,18 @@
 使用 configure_node 配置 fortigate1：
 ```
 config system interface
-edit port1
+edit port2
+set alias "WAN"
 set mode static
 set ip 192.168.122.10 255.255.255.0
-set allowaccess ping https ssh http
+set allowaccess ping
 next
-edit port2
+edit port3
 set mode static
 set ip 192.168.1.1 255.255.255.0
 set allowaccess ping
 next
-edit port3
+edit port4
 set mode static
 set ip 192.168.2.1 255.255.255.0
 set allowaccess ping
@@ -59,7 +60,7 @@ config router static
 edit 1
 set dst 0.0.0.0 0.0.0.0
 set gateway 192.168.122.1
-set device port1
+set device port2
 next
 end
 ```
@@ -108,7 +109,7 @@ end
 1. **严格按步骤顺序执行**，完成上一步后才能进行下一步
 2. **不要跳过任何步骤**，特别是等待和配置步骤
 3. **在步骤3和步骤5后必须调用 wait_for_nodes_ready**
-4. **所有8个步骤都完成后才算部署成功**
+4. **所有7个步骤都完成后才算部署成功**
 5. **不要在中间步骤停止**，即使某些操作返回成功也要继续执行后续步骤
 
 ## CRITICAL: 部署完成检查清单
@@ -118,12 +119,12 @@ end
 - [ ] 步骤1：5个节点已创建（PC1, PC2, fortigate1, nat1, switch1）
 - [ ] 步骤2：4条链路已创建
 - [ ] 步骤3：wait_for_nodes_ready 已调用并返回成功
-- [ ] 步骤4：FortiGate接口和路由已配置
+- [ ] 步骤4：FortiGate接口和路由已配置（port1保留管理，port2=WAN，port3/port4=业务口）
 - [ ] 步骤5：license已导入，FortiGate已重启并重新就绪
 - [ ] 步骤6：防火墙策略已配置
 - [ ] 步骤7：PC1和PC2的IP地址已配置
 
 **WARNING: 如果只完成了步骤1-2就停止，部署将不完整，网络将无法正常工作！**
 
-**记住：你的任务是完成所有8个步骤，而不仅仅是创建节点和链路！**
+**记住：你的任务是完成所有7个步骤，而不仅仅是创建节点和链路！**
 必须在所有步骤完成并验证通过后才能结束。
