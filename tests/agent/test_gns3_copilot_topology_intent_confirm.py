@@ -5,10 +5,6 @@ from __future__ import annotations
 from langchain.messages import AIMessage, HumanMessage
 
 from gns3_copilot.agent import gns3_copilot as agent_module
-from gns3_copilot.topology_skills import (
-    create_default_skill_registry,
-    initialize_skill_session,
-)
 
 
 def test_topology_intent_triggers_confirmation_question(monkeypatch) -> None:
@@ -61,6 +57,21 @@ def test_pending_topology_confirmation_yes_enters_skill_clarification(
             "include_license": None,
         },
     )
+    monkeypatch.setattr(
+        agent_module,
+        "_invoke_topology_skill_session_llm",
+        lambda session, conversation_messages, config=None: {
+            "status": "need_clarification",
+            "output_text": (
+                "请先确认。\n```clarify_options\n"
+                '{"kind":"clarification_choice","question_id":"q1","question":"x?",'
+                '"options":[{"id":"A","label":"a","value":"a"},{"id":"B","label":"b","value":"b"}],'
+                '"allow_free_text":true}\n```'
+            ),
+            "missing_requirements": [],
+            "session": session,
+        },
+    )
 
     state = {
         "messages": [HumanMessage(content="是")],
@@ -80,7 +91,7 @@ def test_pending_topology_confirmation_yes_enters_skill_clarification(
     assert "clarify_options" in str(message.content)
     assert result["pending_topology_prompt_request"] is None
     assert isinstance(result["pending_topology_skill_session"], dict)
-    assert result["pending_clarification_question"]["question_id"] == "topology_use_switch"
+    assert result["pending_clarification_question"] is not None
 
 
 def test_pending_topology_skill_session_with_complete_spec_generates_prompt(
@@ -95,17 +106,18 @@ def test_pending_topology_skill_session_with_complete_spec_generates_prompt(
         _should_not_invoke,
     )
     monkeypatch.setattr(agent_module, "is_topology_dry_run_enabled", lambda: True)
-
-    session = initialize_skill_session(
-        user_request="请设计一个 FortiGate 小型网络",
-        draft_spec={
-            "uses_fortigate": True,
-            "lan_count": 2,
-            "use_switch": True,
-            "use_nat": True,
-            "include_license": False,
+    monkeypatch.setattr(
+        agent_module,
+        "_invoke_topology_skill_session_llm",
+        lambda session, conversation_messages, config=None: {
+            "status": "completed",
+            "output_text": (
+                "## 节点清单\n1. HQ-FGT\n## 链路清单\n1. x\n"
+                "## 执行步骤\nstep\n## 执行规则\nrule\n## CRITICAL: 部署完成检查清单\ncheck"
+            ),
+            "missing_requirements": [],
+            "session": session,
         },
-        registry=create_default_skill_registry(),
     )
 
     state = {
@@ -113,7 +125,12 @@ def test_pending_topology_skill_session_with_complete_spec_generates_prompt(
         "llm_calls": 1,
         "selected_project": None,
         "simulated_topology": None,
-        "pending_topology_skill_session": session,
+        "pending_topology_skill_session": {
+            "user_request": "请设计一个 FortiGate 小型网络",
+            "active_skill_names": ["topology-prompt-orchestrator", "fortigate-topology"],
+            "draft_spec": {"uses_fortigate": True},
+            "round": 1,
+        },
         "pending_clarification_question": None,
     }
 

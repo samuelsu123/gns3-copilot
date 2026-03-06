@@ -28,6 +28,7 @@ FORTIGATE_REQUIRED_MARKERS = (
     "set dst",
     "set device",
 )
+TOPOLOGY_SKILL_BASE_DIR = Path(__file__).with_name("skills")
 
 
 def load_simple_fgt_reference() -> str:
@@ -37,6 +38,62 @@ def load_simple_fgt_reference() -> str:
         return reference_path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def load_topology_skill_markdown(skill_name: str) -> str:
+    """
+    Load one internal topology skill markdown body.
+
+    This is runtime-facing skill content used as prompt guidance, not Codex host skills.
+    """
+    normalized = str(skill_name or "").strip()
+    if not normalized:
+        return ""
+    skill_path = TOPOLOGY_SKILL_BASE_DIR / normalized / "SKILL.md"
+    try:
+        return skill_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def build_topology_skill_generation_prompt(
+    *,
+    user_request: str,
+    active_skill_documents: list[tuple[str, str]],
+    reference_prompt: str = "",
+) -> str:
+    """Build one system prompt that composes orchestrator skill + FortiGate skill docs."""
+    skill_blocks: list[str] = []
+    for skill_name, skill_doc in active_skill_documents:
+        if not skill_doc.strip():
+            continue
+        skill_blocks.append(f"[Skill: {skill_name}]\n```markdown\n{skill_doc.strip()}\n```")
+    skills_text = "\n\n".join(skill_blocks)
+
+    reference_block = ""
+    if reference_prompt.strip():
+        reference_block = (
+            "风格参考（仅作结构参考，内容必须按当前需求重写）：\n"
+            f"```text\n{reference_prompt.strip()}\n```"
+        )
+
+    return (
+        "你是 gns3-copilot 拓扑 prompt 生成代理。"
+        "请严格遵循下方技能文档中定义的流程与约束。\n\n"
+        "输出要求：\n"
+        "1) 若信息不足：只输出一个 `clarify_options` 问题块（单题单轮）。\n"
+        "2) 若信息充足：输出完整拓扑部署 prompt，且必须包含并按顺序输出：\n"
+        "   - ## 节点清单\n"
+        "   - ## 链路清单\n"
+        "   - ## 执行步骤\n"
+        "   - ## 执行规则\n"
+        "   - ## CRITICAL: 部署完成检查清单\n"
+        "3) 不要输出分析过程、道歉和与执行无关的解释。\n\n"
+        f"{reference_block}\n\n"
+        "技能文档：\n"
+        f"{skills_text}\n\n"
+        f"原始用户需求：{str(user_request or '').strip()}"
+    ).strip()
 
 
 def build_topology_intent_detection_prompt() -> str:

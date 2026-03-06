@@ -76,15 +76,16 @@ from gns3_copilot.prompts.fortinet_base_prompt import (
     build_fortinet_baseline_prompt,
 )
 from gns3_copilot.prompts.native_topology_prompt import (
+    build_native_topology_repair_prompt,
+    build_topology_skill_generation_prompt,
     build_topology_intent_detection_prompt,
     build_topology_prompt_confirmation_message,
     build_topology_prompt_missing_requirements_question,
+    is_fortigate_request,
+    load_simple_fgt_reference,
+    load_topology_skill_markdown,
     parse_topology_intent_result,
-)
-from gns3_copilot.topology_skills import (
-    advance_skill_session,
-    create_default_skill_registry,
-    initialize_skill_session,
+    validate_native_topology_prompt,
 )
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
@@ -203,6 +204,9 @@ TOPOLOGY_PROMPT_DECLINE_KEYWORDS = {
     "n",
 }
 TOPOLOGY_INTENT_MIN_CONFIDENCE = 0.55
+TOPOLOGY_PROMPT_MAX_REPAIR_ATTEMPTS = 2
+TOPOLOGY_ORCHESTRATOR_SKILL_NAME = "topology-prompt-orchestrator"
+FORTIGATE_TOPOLOGY_SKILL_NAME = "fortigate-topology"
 
 
 # Define state
@@ -761,6 +765,178 @@ def _extract_topology_prompt_spec_with_llm(
     return {}
 
 
+def _select_topology_skill_names(
+    user_request: str,
+    draft_spec: dict[str, Any] | None = None,
+) -> list[str]:
+    """Select internal skill docs used for topology prompt generation."""
+    skill_names = [TOPOLOGY_ORCHESTRATOR_SKILL_NAME]
+    spec = draft_spec if isinstance(draft_spec, dict) else {}
+    use_fortigate_from_spec = _safe_bool(spec.get("uses_fortigate"), default=False)
+    if use_fortigate_from_spec or is_fortigate_request(user_request):
+        skill_names.append(FORTIGATE_TOPOLOGY_SKILL_NAME)
+    return skill_names
+
+
+def _contains_clarification_block(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return "```clarify_options" in lowered or "'''clarify_options" in lowered
+
+
+def _invoke_topology_skill_session_llm(
+    *,
+    session: dict[str, Any],
+    conversation_messages: list[AnyMessage],
+    config: RunnableConfig | None = None,
+) -> dict[str, Any]:
+    """
+    Run one skill-driven generation turn.
+
+    设计说明（中文）:
+    - 本函数采用“skill.md 约束 + LLM 编排”模式，而非硬模板填槽。
+    - LLM 可以先提单题澄清（clarify_options），也可以直接产出最终 prompt。
+    """
+    request_text = str(session.get("user_request", "")).strip()
+    if not request_text:
+        return {
+            "status": "invalid",
+            "output_text": "未检测到可生成拓扑 prompt 的需求描述。",
+            "missing_requirements": ["缺少原始用户需求"],
+            "session": session,
+        }
+
+    active_skill_names = session.get("active_skill_names", [])
+    if not isinstance(active_skill_names, list) or not active_skill_names:
+        active_skill_names = [TOPOLOGY_ORCHESTRATOR_SKILL_NAME]
+        session["active_skill_names"] = active_skill_names
+
+    active_skill_documents: list[tuple[str, str]] = []
+    for skill_name in active_skill_names:
+        document = load_topology_skill_markdown(str(skill_name))
+        if document.strip():
+            active_skill_documents.append((str(skill_name), document))
+
+    reference_prompt = load_simple_fgt_reference()
+    system_prompt = build_topology_skill_generation_prompt(
+        user_request=request_text,
+        active_skill_documents=active_skill_documents,
+        reference_prompt=reference_prompt,
+    )
+
+    trace_thread_id, trace_request_id = _extract_trace_context(config)
+    trace_context = (
+        (trace_thread_id, trace_request_id)
+        if trace_thread_id and trace_request_id
+        else None
+    )
+    prompt_model = create_base_model(
+        trace_context=trace_context,
+        model_tag="topology_prompt_model",
+    )
+
+    normalized_messages = [
+        _normalize_message_for_model(message) for message in conversation_messages
+    ]
+    recent_messages = normalized_messages[-10:]
+    generation_messages: list[AnyMessage] = [
+        SystemMessage(content=build_clarification_choice_prompt()),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"原始用户需求：{request_text}"),
+        *recent_messages,
+    ]
+
+    generation_response = prompt_model.invoke(
+        generation_messages, config={"tags": [INTERNAL_LLM_TAG]}
+    )
+    _log_llm_interaction(
+        tag="topology_prompt_model",
+        inputs=generation_messages,
+        output=generation_response,
+        config=config,
+    )
+
+    output_text = _stringify_message_content(
+        getattr(generation_response, "content", "")
+    ).strip()
+    session["round"] = int(session.get("round", 0)) + 1
+
+    if _contains_clarification_block(output_text):
+        return {
+            "status": "need_clarification",
+            "output_text": output_text,
+            "missing_requirements": [],
+            "session": session,
+        }
+
+    validation = validate_native_topology_prompt(
+        text=output_text,
+        user_request=request_text,
+    )
+    if validation.get("ok"):
+        return {
+            "status": "completed",
+            "output_text": output_text,
+            "missing_requirements": [],
+            "session": session,
+        }
+
+    candidate_text = output_text
+    missing_requirements = list(validation.get("missing_requirements", []))
+    for attempt in range(1, TOPOLOGY_PROMPT_MAX_REPAIR_ATTEMPTS + 1):
+        repair_messages: list[AnyMessage] = [
+            SystemMessage(content=build_clarification_choice_prompt()),
+            SystemMessage(content=system_prompt),
+            SystemMessage(
+                content=build_native_topology_repair_prompt(
+                    user_request=request_text,
+                    previous_output=candidate_text or "(empty)",
+                    missing_requirements=missing_requirements,
+                )
+            ),
+            HumanMessage(content=request_text),
+        ]
+        repair_response = prompt_model.invoke(
+            repair_messages, config={"tags": [INTERNAL_LLM_TAG]}
+        )
+        _log_llm_interaction(
+            tag=f"topology_prompt_model_repair_{attempt}",
+            inputs=repair_messages,
+            output=repair_response,
+            config=config,
+        )
+        candidate_text = _stringify_message_content(
+            getattr(repair_response, "content", "")
+        ).strip()
+
+        if _contains_clarification_block(candidate_text):
+            return {
+                "status": "need_clarification",
+                "output_text": candidate_text,
+                "missing_requirements": [],
+                "session": session,
+            }
+
+        validation = validate_native_topology_prompt(
+            text=candidate_text,
+            user_request=request_text,
+        )
+        if validation.get("ok"):
+            return {
+                "status": "completed",
+                "output_text": candidate_text,
+                "missing_requirements": [],
+                "session": session,
+            }
+        missing_requirements = list(validation.get("missing_requirements", []))
+
+    return {
+        "status": "invalid",
+        "output_text": candidate_text,
+        "missing_requirements": missing_requirements,
+        "session": session,
+    }
+
+
 def _is_human_message(message: AnyMessage | None) -> bool:
     if message is None:
         return False
@@ -1168,21 +1344,20 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
-    topology_skill_registry = create_default_skill_registry()
-
     pending_topology_skill_session = state.get("pending_topology_skill_session")
     if isinstance(pending_topology_skill_session, dict):
-        # 拓扑 skill 会话开启后，优先处理该会话，避免被普通对话流程打断。
-        # Once a topology skill session starts, keep it as the highest-priority flow.
-        skill_result = advance_skill_session(
-            pending_topology_skill_session,
-            user_answer=latest_human_text if _is_human_message(last_message) else None,
-            registry=topology_skill_registry,
+        # skill 会话期间由 LLM 按 skill.md 继续推进（提问或给最终 prompt）。
+        # During an active skill session, LLM keeps driving next clarification/final output.
+        session_result = _invoke_topology_skill_session_llm(
+            session=dict(pending_topology_skill_session),
+            conversation_messages=messages,
+            config=config,
         )
-        status = str(skill_result.get("status", "invalid"))
+        status = str(session_result.get("status", "invalid"))
+        output_text = str(session_result.get("output_text", "")).strip()
+
         if status == "need_clarification":
-            clarification_text = str(skill_result.get("clarification_message", "")).strip()
-            clarification_message = AIMessage(content=clarification_text)
+            clarification_message = AIMessage(content=output_text)
             _log_llm_interaction(
                 tag="base_model",
                 inputs=full_messages,
@@ -1196,9 +1371,15 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "pending_topology_prompt_context": state.get(
                     "pending_topology_prompt_context"
                 ),
-                "pending_topology_skill_session": skill_result.get("session"),
-                "pending_clarification_question": skill_result.get("question"),
-                "topology_prompt_spec": skill_result.get("prompt_spec"),
+                "pending_topology_skill_session": session_result.get("session"),
+                "pending_clarification_question": (
+                    {"raw_text": output_text}
+                    if _contains_clarification_block(output_text)
+                    else None
+                ),
+                "topology_prompt_spec": session_result.get("session", {}).get(
+                    "draft_spec"
+                ),
                 "pending_fortigate_config_call": None,
                 "pending_fortigate_config_preview": None,
                 "pending_fortigate_quality_call": None,
@@ -1211,8 +1392,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             return result
 
         if status == "completed":
-            rendered_prompt = str(skill_result.get("rendered_prompt", "")).strip()
-            generated_message = AIMessage(content=rendered_prompt)
+            generated_message = AIMessage(content=output_text)
             _log_llm_interaction(
                 tag="base_model",
                 inputs=full_messages,
@@ -1226,7 +1406,9 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "pending_topology_prompt_context": None,
                 "pending_topology_skill_session": None,
                 "pending_clarification_question": None,
-                "topology_prompt_spec": skill_result.get("prompt_spec"),
+                "topology_prompt_spec": session_result.get("session", {}).get(
+                    "draft_spec"
+                ),
                 "pending_fortigate_config_call": None,
                 "pending_fortigate_config_preview": None,
                 "pending_fortigate_quality_call": None,
@@ -1238,11 +1420,11 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 result["simulated_topology"] = simulated_topology
             return result
 
-        missing_requirements = list(skill_result.get("missing_requirements", []))
+        missing_requirements = list(session_result.get("missing_requirements", []))
         fallback_message = AIMessage(
             content=build_topology_prompt_missing_requirements_question(
                 user_request=str(
-                    skill_result.get("prompt_spec", {}).get(
+                    session_result.get("session", {}).get(
                         "user_request", latest_human_text
                     )
                 ),
@@ -1262,9 +1444,9 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             "pending_topology_prompt_context": {
                 "missing_requirements": missing_requirements
             },
-            "pending_topology_skill_session": skill_result.get("session"),
-            "pending_clarification_question": skill_result.get("question"),
-            "topology_prompt_spec": skill_result.get("prompt_spec"),
+            "pending_topology_skill_session": session_result.get("session"),
+            "pending_clarification_question": None,
+            "topology_prompt_spec": session_result.get("session", {}).get("draft_spec"),
             "pending_fortigate_config_call": None,
             "pending_fortigate_config_preview": None,
             "pending_fortigate_quality_call": None,
@@ -1284,24 +1466,31 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             request_text = str(
                 pending_topology_prompt.get("user_request", latest_human_text)
             ).strip() or latest_human_text
+            # 先抽取草案用于技能选择，再由 skill.md 驱动 LLM 执行主流程。
             draft_spec = _extract_topology_prompt_spec_with_llm(
                 user_request=request_text,
                 config=config,
             )
-            session = initialize_skill_session(
+            active_skill_names = _select_topology_skill_names(
                 user_request=request_text,
                 draft_spec=draft_spec,
-                registry=topology_skill_registry,
             )
-            skill_result = advance_skill_session(
+            session = {
+                "user_request": request_text,
+                "active_skill_names": active_skill_names,
+                "draft_spec": draft_spec,
+                "round": 0,
+            }
+            session_result = _invoke_topology_skill_session_llm(
                 session=session,
-                user_answer=None,
-                registry=topology_skill_registry,
+                conversation_messages=messages,
+                config=config,
             )
+            session_status = str(session_result.get("status", "invalid"))
+            session_output = str(session_result.get("output_text", "")).strip()
 
-            if str(skill_result.get("status", "")) == "need_clarification":
-                clarification_text = str(skill_result.get("clarification_message", "")).strip()
-                clarification_message = AIMessage(content=clarification_text)
+            if session_status == "need_clarification":
+                clarification_message = AIMessage(content=session_output)
                 _log_llm_interaction(
                     tag="base_model",
                     inputs=full_messages,
@@ -1313,9 +1502,13 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     "topology_info": topology_info,
                     "pending_topology_prompt_request": None,
                     "pending_topology_prompt_context": pending_topology_context,
-                    "pending_topology_skill_session": skill_result.get("session"),
-                    "pending_clarification_question": skill_result.get("question"),
-                    "topology_prompt_spec": skill_result.get("prompt_spec"),
+                    "pending_topology_skill_session": session_result.get("session"),
+                    "pending_clarification_question": (
+                        {"raw_text": session_output}
+                        if _contains_clarification_block(session_output)
+                        else None
+                    ),
+                    "topology_prompt_spec": draft_spec,
                     "pending_fortigate_config_call": None,
                     "pending_fortigate_config_preview": None,
                     "pending_fortigate_quality_call": None,
@@ -1327,9 +1520,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     result["simulated_topology"] = simulated_topology
                 return result
 
-            if str(skill_result.get("status", "")) == "completed":
-                rendered_prompt = str(skill_result.get("rendered_prompt", "")).strip()
-                generated_message = AIMessage(content=rendered_prompt)
+            if session_status == "completed":
+                generated_message = AIMessage(content=session_output)
                 _log_llm_interaction(
                     tag="base_model",
                     inputs=full_messages,
@@ -1343,7 +1535,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     "pending_topology_prompt_context": None,
                     "pending_topology_skill_session": None,
                     "pending_clarification_question": None,
-                    "topology_prompt_spec": skill_result.get("prompt_spec"),
+                    "topology_prompt_spec": draft_spec,
                     "pending_fortigate_config_call": None,
                     "pending_fortigate_config_preview": None,
                     "pending_fortigate_quality_call": None,
@@ -1355,7 +1547,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     result["simulated_topology"] = simulated_topology
                 return result
 
-            missing_requirements = list(skill_result.get("missing_requirements", []))
+            missing_requirements = list(session_result.get("missing_requirements", []))
             missing_message = AIMessage(
                 content=build_topology_prompt_missing_requirements_question(
                     user_request=request_text,
@@ -1375,9 +1567,9 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "pending_topology_prompt_context": {
                     "missing_requirements": missing_requirements,
                 },
-                "pending_topology_skill_session": skill_result.get("session"),
-                "pending_clarification_question": skill_result.get("question"),
-                "topology_prompt_spec": skill_result.get("prompt_spec"),
+                "pending_topology_skill_session": session_result.get("session"),
+                "pending_clarification_question": None,
+                "topology_prompt_spec": draft_spec,
                 "pending_fortigate_config_call": None,
                 "pending_fortigate_config_preview": None,
                 "pending_fortigate_quality_call": None,
