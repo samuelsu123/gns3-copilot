@@ -76,16 +76,21 @@ from gns3_copilot.prompts.fortinet_base_prompt import (
     build_fortinet_baseline_prompt,
 )
 from gns3_copilot.prompts.native_topology_prompt import (
+    TOPOLOGY_PHASE_COMPLETED,
+    TOPOLOGY_PHASE_OVERVIEW,
     build_native_topology_repair_prompt,
+    build_phase_confirmation_message,
     build_topology_intent_detection_prompt,
     build_topology_prompt_confirmation_message,
     build_topology_prompt_missing_requirements_question,
-    build_topology_skill_generation_prompt,
+    build_topology_skill_phase_prompt,
     is_fortigate_request,
     load_simple_fgt_reference,
     load_topology_skill_markdown,
+    next_phase,
     parse_topology_intent_result,
-    validate_native_topology_prompt,
+    resolve_phase_confirmation,
+    validate_phase_output,
 )
 from gns3_copilot.tools_v2 import (
     ExecuteMultipleDeviceCommands,
@@ -844,11 +849,13 @@ def _invoke_topology_skill_session_llm(
     config: RunnableConfig | None = None,
 ) -> dict[str, Any]:
     """
-    Run one skill-driven generation turn.
+    Run one phase-aware skill-driven generation turn.
 
     设计说明（中文）:
-    - 本函数采用“skill.md 约束 + LLM 编排”模式，而非硬模板填槽。
-    - LLM 可以先提单题澄清（clarify_options），也可以直接产出最终 prompt。
+    - 本函数采用渐进式披露模式，按阶段逐层输出。
+    - 每阶段可先提单题澄清（clarify_options），也可直接产出该阶段输出。
+    - session["phase"] 跟踪当前所处阶段。
+    - session["confirmed_layers"] 保存已确认的各层输出。
     """
     request_text = str(session.get("user_request", "")).strip()
     if not request_text:
@@ -858,6 +865,14 @@ def _invoke_topology_skill_session_llm(
             "missing_requirements": ["缺少原始用户需求"],
             "session": session,
         }
+
+    # Ensure phase and confirmed_layers are initialized.
+    if "phase" not in session:
+        session["phase"] = TOPOLOGY_PHASE_OVERVIEW
+    if "confirmed_layers" not in session:
+        session["confirmed_layers"] = {}
+    current_phase: str = session["phase"]
+    confirmed_layers: dict[str, str] = session["confirmed_layers"]
 
     active_skill_names = session.get("active_skill_names", [])
     if not isinstance(active_skill_names, list) or not active_skill_names:
@@ -871,8 +886,10 @@ def _invoke_topology_skill_session_llm(
             active_skill_documents.append((str(skill_name), document))
 
     reference_prompt = load_simple_fgt_reference()
-    system_prompt = build_topology_skill_generation_prompt(
+    system_prompt = build_topology_skill_phase_prompt(
         user_request=request_text,
+        phase=current_phase,
+        confirmed_layers=confirmed_layers,
         active_skill_documents=active_skill_documents,
         reference_prompt=reference_prompt,
     )
@@ -903,7 +920,7 @@ def _invoke_topology_skill_session_llm(
         generation_messages, config={"tags": [INTERNAL_LLM_TAG]}
     )
     _log_llm_interaction(
-        tag="topology_prompt_model",
+        tag=f"topology_prompt_model_{current_phase}",
         inputs=generation_messages,
         output=generation_response,
         config=config,
@@ -922,11 +939,71 @@ def _invoke_topology_skill_session_llm(
             "session": session,
         }
 
-    validation = validate_native_topology_prompt(
+    # Validate output for the current phase.
+    validation = validate_phase_output(
         text=output_text,
+        phase=current_phase,
         user_request=request_text,
     )
-    if validation.get("ok"):
+
+    if not validation.get("ok"):
+        # Attempt repair for this phase.
+        candidate_text = output_text
+        missing_requirements = list(validation.get("missing_requirements", []))
+        for attempt in range(1, TOPOLOGY_PROMPT_MAX_REPAIR_ATTEMPTS + 1):
+            repair_messages: list[AnyMessage] = [
+                SystemMessage(content=build_clarification_choice_prompt()),
+                SystemMessage(content=system_prompt),
+                SystemMessage(
+                    content=build_native_topology_repair_prompt(
+                        user_request=request_text,
+                        previous_output=candidate_text or "(empty)",
+                        missing_requirements=missing_requirements,
+                    )
+                ),
+                HumanMessage(content=request_text),
+            ]
+            repair_response = prompt_model.invoke(
+                repair_messages, config={"tags": [INTERNAL_LLM_TAG]}
+            )
+            _log_llm_interaction(
+                tag=f"topology_prompt_model_repair_{current_phase}_{attempt}",
+                inputs=repair_messages,
+                output=repair_response,
+                config=config,
+            )
+            candidate_text = _stringify_message_content(
+                getattr(repair_response, "content", "")
+            ).strip()
+
+            if _contains_clarification_block(candidate_text):
+                return {
+                    "status": "need_clarification",
+                    "output_text": candidate_text,
+                    "missing_requirements": [],
+                    "session": session,
+                }
+
+            validation = validate_phase_output(
+                text=candidate_text,
+                phase=current_phase,
+                user_request=request_text,
+            )
+            if validation.get("ok"):
+                output_text = candidate_text
+                break
+            missing_requirements = list(validation.get("missing_requirements", []))
+        else:
+            # All repair attempts failed.
+            return {
+                "status": "invalid",
+                "output_text": candidate_text,
+                "missing_requirements": missing_requirements,
+                "session": session,
+            }
+
+    # Phase output validated. Check if this is the final phase.
+    if current_phase == TOPOLOGY_PHASE_COMPLETED:
         return {
             "status": "completed",
             "output_text": output_text,
@@ -934,54 +1011,13 @@ def _invoke_topology_skill_session_llm(
             "session": session,
         }
 
-    candidate_text = output_text
-    missing_requirements = list(validation.get("missing_requirements", []))
-    for attempt in range(1, TOPOLOGY_PROMPT_MAX_REPAIR_ATTEMPTS + 1):
-        repair_messages: list[AnyMessage] = [
-            SystemMessage(content=build_clarification_choice_prompt()),
-            SystemMessage(content=system_prompt),
-            SystemMessage(
-                content=build_native_topology_repair_prompt(
-                    user_request=request_text,
-                    previous_output=candidate_text or "(empty)",
-                    missing_requirements=missing_requirements,
-                )
-            ),
-            HumanMessage(content=request_text),
-        ]
-        repair_response = prompt_model.invoke(
-            repair_messages, config={"tags": [INTERNAL_LLM_TAG]}
-        )
-        _log_llm_interaction(
-            tag=f"topology_prompt_model_repair_{attempt}",
-            inputs=repair_messages,
-            output=repair_response,
-            config=config,
-        )
-        candidate_text = _stringify_message_content(
-            getattr(repair_response, "content", "")
-        ).strip()
-
-        if _contains_clarification_block(candidate_text):
-            return {
-                "status": "need_clarification",
-                "output_text": candidate_text,
-                "missing_requirements": [],
-                "session": session,
-            }
-
-        validation = validate_native_topology_prompt(
-            text=candidate_text,
-            user_request=request_text,
-        )
-        if validation.get("ok"):
-            return {
-                "status": "completed",
-                "output_text": candidate_text,
-                "missing_requirements": [],
-                "session": session,
-            }
-        missing_requirements = list(validation.get("missing_requirements", []))
+    # Non-final phase completed — return for user confirmation.
+    return {
+        "status": "phase_completed",
+        "output_text": output_text,
+        "missing_requirements": [],
+        "session": session,
+    }
 
     return {
         "status": "invalid",
@@ -1458,19 +1494,46 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
-    # --- Phase 4: Active topology skill session ---
-    # --- 阶段 4：进行中的拓扑 skill 会话 ---
-    # The skill session drives multi-round clarification until a valid prompt is produced.
-    # skill 会话驱动多轮澄清，直到产出有效 prompt。
+    # --- Phase 4: Active topology skill session (progressive disclosure) ---
+    # --- 阶段 4：进行中的拓扑 skill 会话（渐进式披露） ---
+    # The skill session drives phase-by-phase generation. Each phase produces output
+    # that the user confirms before advancing. User replies are either confirmations
+    # (advance to next phase) or revision feedback (re-run same phase).
     pending_topology_skill_session = state.get("pending_topology_skill_session")
     if isinstance(pending_topology_skill_session, dict):
+        current_session = dict(pending_topology_skill_session)
+
+        # If the session has a pending phase confirmation, resolve it first.
+        pending_phase = current_session.get("pending_phase_confirmation")
+        if pending_phase and latest_human_text:
+            decision = resolve_phase_confirmation(latest_human_text)
+            if decision == "confirm":
+                # Store confirmed output and advance to next phase.
+                confirmed_layers = dict(current_session.get("confirmed_layers", {}))
+                confirmed_layers[pending_phase] = str(
+                    current_session.get("pending_phase_output", "")
+                )
+                current_session["confirmed_layers"] = confirmed_layers
+                current_session["pending_phase_confirmation"] = None
+                current_session["pending_phase_output"] = None
+                nxt = next_phase(pending_phase)
+                if nxt is None:
+                    nxt = TOPOLOGY_PHASE_COMPLETED
+                current_session["phase"] = nxt
+            else:
+                # User wants revisions — stay on the same phase but pass
+                # the user's feedback through the conversation messages.
+                current_session["pending_phase_confirmation"] = None
+                current_session["pending_phase_output"] = None
+
         session_result = _invoke_topology_skill_session_llm(
-            session=dict(pending_topology_skill_session),
+            session=current_session,
             conversation_messages=messages,
             config=config,
         )
         status = str(session_result.get("status", "invalid"))
         output_text = str(session_result.get("output_text", "")).strip()
+        updated_session = session_result.get("session", current_session)
 
         if status == "need_clarification":
             clarification_message = AIMessage(content=output_text)
@@ -1487,15 +1550,51 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "pending_topology_prompt_context": state.get(
                     "pending_topology_prompt_context"
                 ),
-                "pending_topology_skill_session": session_result.get("session"),
+                "pending_topology_skill_session": updated_session,
                 "pending_clarification_question": (
                     {"raw_text": output_text}
                     if _contains_clarification_block(output_text)
                     else None
                 ),
-                "topology_prompt_spec": session_result.get("session", {}).get(
-                    "draft_spec"
+                "topology_prompt_spec": updated_session.get("draft_spec"),
+                "pending_fortigate_config_call": None,
+                "pending_fortigate_config_preview": None,
+                "pending_fortigate_quality_call": None,
+                "pending_fortigate_quality_preview": None,
+            }
+            if quality_pending_reset:
+                result.update(quality_pending_reset)
+            if dry_run_enabled and simulated_topology is not None:
+                result["simulated_topology"] = simulated_topology
+            return result
+
+        if status == "phase_completed":
+            # Show phase output to user and ask for confirmation.
+            current_phase = str(updated_session.get("phase", TOPOLOGY_PHASE_OVERVIEW))
+            confirmation_text = build_phase_confirmation_message(
+                phase=current_phase,
+                output_text=output_text,
+            )
+            phase_message = AIMessage(content=confirmation_text)
+            _log_llm_interaction(
+                tag="base_model",
+                inputs=full_messages,
+                output=phase_message,
+                config=config,
+            )
+            # Mark the session as waiting for phase confirmation.
+            updated_session["pending_phase_confirmation"] = current_phase
+            updated_session["pending_phase_output"] = output_text
+            result = {
+                "messages": [phase_message],
+                "topology_info": topology_info,
+                "pending_topology_prompt_request": None,
+                "pending_topology_prompt_context": state.get(
+                    "pending_topology_prompt_context"
                 ),
+                "pending_topology_skill_session": updated_session,
+                "pending_clarification_question": None,
+                "topology_prompt_spec": updated_session.get("draft_spec"),
                 "pending_fortigate_config_call": None,
                 "pending_fortigate_config_preview": None,
                 "pending_fortigate_quality_call": None,
@@ -1522,9 +1621,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "pending_topology_prompt_context": None,
                 "pending_topology_skill_session": None,
                 "pending_clarification_question": None,
-                "topology_prompt_spec": session_result.get("session", {}).get(
-                    "draft_spec"
-                ),
+                "topology_prompt_spec": updated_session.get("draft_spec"),
                 "pending_fortigate_config_call": None,
                 "pending_fortigate_config_preview": None,
                 "pending_fortigate_quality_call": None,
@@ -1536,13 +1633,12 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 result["simulated_topology"] = simulated_topology
             return result
 
+        # status == "invalid"
         missing_requirements = list(session_result.get("missing_requirements", []))
         fallback_message = AIMessage(
             content=build_topology_prompt_missing_requirements_question(
                 user_request=str(
-                    session_result.get("session", {}).get(
-                        "user_request", latest_human_text
-                    )
+                    updated_session.get("user_request", latest_human_text)
                 ),
                 missing_requirements=missing_requirements,
             )
@@ -1560,9 +1656,9 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             "pending_topology_prompt_context": {
                 "missing_requirements": missing_requirements
             },
-            "pending_topology_skill_session": session_result.get("session"),
+            "pending_topology_skill_session": updated_session,
             "pending_clarification_question": None,
-            "topology_prompt_spec": session_result.get("session", {}).get("draft_spec"),
+            "topology_prompt_spec": updated_session.get("draft_spec"),
             "pending_fortigate_config_call": None,
             "pending_fortigate_config_preview": None,
             "pending_fortigate_quality_call": None,
@@ -1602,6 +1698,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "active_skill_names": active_skill_names,
                 "draft_spec": draft_spec,
                 "round": 0,
+                "phase": TOPOLOGY_PHASE_OVERVIEW,
+                "confirmed_layers": {},
             }
             session_result = _invoke_topology_skill_session_llm(
                 session=session,
@@ -1610,6 +1708,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             )
             session_status = str(session_result.get("status", "invalid"))
             session_output = str(session_result.get("output_text", "")).strip()
+
+            updated_session = session_result.get("session", session)
 
             if session_status == "need_clarification":
                 clarification_message = AIMessage(content=session_output)
@@ -1624,12 +1724,48 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     "topology_info": topology_info,
                     "pending_topology_prompt_request": None,
                     "pending_topology_prompt_context": pending_topology_context,
-                    "pending_topology_skill_session": session_result.get("session"),
+                    "pending_topology_skill_session": updated_session,
                     "pending_clarification_question": (
                         {"raw_text": session_output}
                         if _contains_clarification_block(session_output)
                         else None
                     ),
+                    "topology_prompt_spec": draft_spec,
+                    "pending_fortigate_config_call": None,
+                    "pending_fortigate_config_preview": None,
+                    "pending_fortigate_quality_call": None,
+                    "pending_fortigate_quality_preview": None,
+                }
+                if quality_pending_reset:
+                    result.update(quality_pending_reset)
+                if dry_run_enabled and simulated_topology is not None:
+                    result["simulated_topology"] = simulated_topology
+                return result
+
+            if session_status == "phase_completed":
+                current_phase = str(
+                    updated_session.get("phase", TOPOLOGY_PHASE_OVERVIEW)
+                )
+                confirmation_text = build_phase_confirmation_message(
+                    phase=current_phase,
+                    output_text=session_output,
+                )
+                phase_message = AIMessage(content=confirmation_text)
+                _log_llm_interaction(
+                    tag="base_model",
+                    inputs=full_messages,
+                    output=phase_message,
+                    config=config,
+                )
+                updated_session["pending_phase_confirmation"] = current_phase
+                updated_session["pending_phase_output"] = session_output
+                result = {
+                    "messages": [phase_message],
+                    "topology_info": topology_info,
+                    "pending_topology_prompt_request": None,
+                    "pending_topology_prompt_context": pending_topology_context,
+                    "pending_topology_skill_session": updated_session,
+                    "pending_clarification_question": None,
                     "topology_prompt_spec": draft_spec,
                     "pending_fortigate_config_call": None,
                     "pending_fortigate_config_preview": None,
@@ -1669,6 +1805,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                     result["simulated_topology"] = simulated_topology
                 return result
 
+            # status == "invalid"
             missing_requirements = list(session_result.get("missing_requirements", []))
             missing_message = AIMessage(
                 content=build_topology_prompt_missing_requirements_question(
@@ -1689,7 +1826,7 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 "pending_topology_prompt_context": {
                     "missing_requirements": missing_requirements,
                 },
-                "pending_topology_skill_session": session_result.get("session"),
+                "pending_topology_skill_session": updated_session,
                 "pending_clarification_question": None,
                 "topology_prompt_spec": draft_spec,
                 "pending_fortigate_config_call": None,
