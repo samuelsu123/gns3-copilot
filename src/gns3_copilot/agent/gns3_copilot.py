@@ -77,10 +77,10 @@ from gns3_copilot.prompts.fortinet_base_prompt import (
 )
 from gns3_copilot.prompts.native_topology_prompt import (
     build_native_topology_repair_prompt,
-    build_topology_skill_generation_prompt,
     build_topology_intent_detection_prompt,
     build_topology_prompt_confirmation_message,
     build_topology_prompt_missing_requirements_question,
+    build_topology_skill_generation_prompt,
     is_fortigate_request,
     load_simple_fgt_reference,
     load_topology_skill_markdown,
@@ -151,6 +151,10 @@ tools_by_name = {tool.name: tool for tool in tools}
 logger.info("GNS3 Copilot application starting up")
 logger.debug("Available tools: %s", [tool.__class__.__name__ for tool in tools])
 
+# ---------------------------------------------------------------------------
+# Constants & keyword sets
+# 常量与关键字集合
+# ---------------------------------------------------------------------------
 FORTIGATE_CONFIG_TOOL_NAME = "execute_multiple_device_config_commands"
 FORTINET_DOC_SEARCH_TOOL_NAME = "fortinet_doc_search"
 RAG_TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -293,6 +297,15 @@ class MessagesState(TypedDict):
     topology_prompt_spec: dict | None
 
 
+# ---------------------------------------------------------------------------
+# Message normalization helpers
+# 消息规范化辅助函数
+# Some LLM providers store message content in non-OpenAI-compatible formats.
+# These helpers normalize content blocks so they can be safely sent to any
+# provider's chat completion API.
+# 部分 LLM 提供商以非 OpenAI 兼容格式存储消息内容。
+# 这些辅助函数将内容块规范化，以安全地发送到任何提供商的 chat API。
+# ---------------------------------------------------------------------------
 def _normalize_content_blocks_to_text(content: list[Any]) -> str:
     """
     Normalize non-OpenAI-compatible content blocks to plain text.
@@ -406,6 +419,18 @@ def _latest_human_text(messages: list[AnyMessage] | None) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# User confirmation resolution helpers
+# 用户确认决策辅助函数
+# FortiGate config operations use a two-phase confirmation flow:
+#   1. Quality review (dry-run only): user reviews CLI draft → pass / cancel / feedback
+#   2. Execution confirmation: user confirms or cancels the actual tool call
+# Topology prompt generation also requires a yes/no confirmation before proceeding.
+# FortiGate 配置操作使用两阶段确认流程：
+#   1. 质量审核（仅 dry-run）：用户审查 CLI 草案 → 通过 / 取消 / 反馈
+#   2. 执行确认：用户确认或取消实际的工具调用
+# 拓扑 prompt 生成在执行前也需要用户 yes/no 确认。
+# ---------------------------------------------------------------------------
 def _normalize_confirmation_token(text: str) -> str:
     normalized = " ".join(str(text or "").strip().lower().split())
     if not normalized:
@@ -436,6 +461,15 @@ def _resolve_fortigate_quality_review(
     return "feedback"
 
 
+# ---------------------------------------------------------------------------
+# Tool call payload extraction helpers
+# 工具调用参数解析辅助函数
+# LLM tool calls may encode arguments as JSON strings, Python literals, or
+# nested dicts. These helpers safely extract the actual payload regardless
+# of the serialization format.
+# LLM 工具调用可能将参数编码为 JSON 字符串、Python 字面量或嵌套字典。
+# 这些辅助函数能安全提取实际参数，不受序列化格式影响。
+# ---------------------------------------------------------------------------
 def _parse_json_payload(value: Any) -> dict[str, Any] | list[Any] | None:
     if isinstance(value, dict):
         return value
@@ -479,6 +513,15 @@ def _extract_device_configs_from_payload(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# FortiGate detection & CLI preview helpers
+# FortiGate 检测与 CLI 预览辅助函数
+# Identify whether a topology node or device name belongs to a FortiGate,
+# extract FortiGate-specific tool calls, and render human-readable CLI previews
+# for the two-phase confirmation flow.
+# 识别拓扑节点或设备名是否属于 FortiGate，提取 FortiGate 相关的工具调用，
+# 并为两阶段确认流程渲染人类可读的 CLI 预览。
+# ---------------------------------------------------------------------------
 def _node_looks_like_fortigate(node: dict[str, Any]) -> bool:
     text = " ".join(
         str(node.get(key, "")).lower()
@@ -650,6 +693,17 @@ def _build_pending_topology_prompt_reminder() -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Topology prompt intent detection & generation
+# 拓扑 prompt 意图检测与生成
+# When a user's message looks like a topology deployment request, we use an
+# internal LLM call to detect intent (confidence-scored). If confirmed, a
+# multi-round "skill session" generates the full deployment prompt — the LLM
+# may ask clarification questions before producing the final output.
+# 当用户消息看起来像拓扑部署请求时，使用内部 LLM 调用检测意图（带置信度评分）。
+# 确认后启动多轮"skill 会话"生成完整部署 prompt —— LLM 可能在产出最终
+# 结果前先提出澄清问题。
+# ---------------------------------------------------------------------------
 def _detect_topology_prompt_intent_via_llm(
     messages: list[AnyMessage] | None,
     config: RunnableConfig | None = None,
@@ -937,6 +991,10 @@ def _invoke_topology_skill_session_llm(
     }
 
 
+# ---------------------------------------------------------------------------
+# General-purpose utilities
+# 通用工具函数
+# ---------------------------------------------------------------------------
 def _is_human_message(message: AnyMessage | None) -> bool:
     if message is None:
         return False
@@ -965,6 +1023,15 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in RAG_TRUTHY_VALUES
 
 
+# ---------------------------------------------------------------------------
+# RAG (Retrieval-Augmented Generation) helpers
+# RAG 检索增强生成辅助函数
+# When RAG is enabled, FortiGate-related user queries automatically trigger
+# a document search before the main LLM call. If no evidence is found, a
+# clarification UI is shown instead of hallucinated answers.
+# 当 RAG 启用时，FortiGate 相关的用户查询会在主 LLM 调用前自动触发文档检索。
+# 若未找到证据，则显示澄清 UI 而非生成幻觉回答。
+# ---------------------------------------------------------------------------
 def _extract_latest_fortinet_doc_result(
     messages: list[AnyMessage] | None,
 ) -> dict[str, Any] | None:
@@ -1100,13 +1167,53 @@ def _log_llm_interaction(
         logger.warning("[LLM_TRACE][%s] write failed: %s", tag, exc)
 
 
-# Define llm call node
-# 定义 LLM 调用节点
-def llm_call(state: dict, config: RunnableConfig | None = None):
-    """LLM decides whether to call a tool or not. LLM 决定是否调用工具。"""
+# ---------------------------------------------------------------------------
+# Core LangGraph nodes
+# 核心 LangGraph 节点
+# ---------------------------------------------------------------------------
 
+
+def llm_call(state: dict, config: RunnableConfig | None = None):
+    """
+    Main LLM decision node — the central hub of the agent workflow.
+    主 LLM 决策节点 —— agent 工作流的核心枢纽。
+
+    Processing priority (evaluated top-to-bottom, first match wins):
+    处理优先级（自上而下检查，首个匹配即返回）：
+
+    1. Build context: load system prompt, project info, topology, FortiGate prompts
+       构建上下文：加载系统提示、项目信息、拓扑、FortiGate 提示
+
+    2. FortiGate quality review pending → handle pass / cancel / feedback
+       FortiGate 质量审核待处理 → 处理 通过 / 取消 / 反馈
+
+    3. FortiGate execution confirmation pending → handle confirm / cancel / reminder
+       FortiGate 执行确认待处理 → 处理 确认 / 取消 / 提醒
+
+    4. Topology skill session active → continue clarification or produce final prompt
+       拓扑 skill 会话进行中 → 继续澄清或产出最终 prompt
+
+    5. Topology prompt confirmation pending → handle yes / no / reminder
+       拓扑 prompt 确认待处理 → 处理 是 / 否 / 提醒
+
+    6. Topology intent detection → ask user to confirm topology prompt generation
+       拓扑意图检测 → 询问用户是否确认生成拓扑 prompt
+
+    7. RAG no-evidence guard → show clarification UI
+       RAG 无证据守护 → 显示澄清 UI
+
+    8. RAG auto-retrieval → inject doc search tool call before LLM
+       RAG 自动检索 → 在 LLM 前注入文档检索工具调用
+
+    9. Normal LLM call → invoke model with tools, intercept FortiGate config calls
+       常规 LLM 调用 → 带工具调用模型，拦截 FortiGate 配置调用
+    """
+
+    # --- Phase 1: Build context messages ---
+    # --- 阶段 1：构建上下文消息 ---
+    # Assemble system prompt + project info + topology + FortiGate persona prompts.
+    # 组装系统提示 + 项目信息 + 拓扑 + FortiGate 人设提示。
     current_prompt = load_system_prompt()
-    # print(current_prompt)
 
     # Get the previously stored project tuple
     # 获取之前存储的项目元组
@@ -1214,11 +1321,14 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
     full_messages = (
         [SystemMessage(content=current_prompt)] + context_messages + normalized_messages
     )
-    # print(full_messages)
     messages = state.get("messages", [])
     last_message = messages[-1] if isinstance(messages, list) and messages else None
     latest_human_text = _latest_human_text(messages)
 
+    # --- Phase 2: FortiGate quality review (dry-run mode only) ---
+    # --- 阶段 2：FortiGate 质量审核（仅 dry-run 模式） ---
+    # If a quality review is pending, resolve user's reply before anything else.
+    # 如果质量审核待处理，优先解析用户回复。
     quality_pending_reset: dict[str, Any] = {}
     pending_quality_call = state.get("pending_fortigate_quality_call")
     pending_quality_preview = str(state.get("pending_fortigate_quality_preview", "") or "")
@@ -1278,6 +1388,10 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             "pending_fortigate_quality_preview": None,
         }
 
+    # --- Phase 3: FortiGate execution confirmation ---
+    # --- 阶段 3：FortiGate 执行确认 ---
+    # If an execution confirmation is pending, resolve confirm / cancel / unknown.
+    # 如果执行确认待处理，解析 确认 / 取消 / 未知。
     pending_call = state.get("pending_fortigate_config_call")
     pending_preview = str(state.get("pending_fortigate_config_preview", "") or "")
     if isinstance(pending_call, dict):
@@ -1344,10 +1458,12 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
+    # --- Phase 4: Active topology skill session ---
+    # --- 阶段 4：进行中的拓扑 skill 会话 ---
+    # The skill session drives multi-round clarification until a valid prompt is produced.
+    # skill 会话驱动多轮澄清，直到产出有效 prompt。
     pending_topology_skill_session = state.get("pending_topology_skill_session")
     if isinstance(pending_topology_skill_session, dict):
-        # skill 会话期间由 LLM 按 skill.md 继续推进（提问或给最终 prompt）。
-        # During an active skill session, LLM keeps driving next clarification/final output.
         session_result = _invoke_topology_skill_session_llm(
             session=dict(pending_topology_skill_session),
             conversation_messages=messages,
@@ -1458,6 +1574,12 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
+    # --- Phase 5: Topology prompt confirmation pending ---
+    # --- 阶段 5：拓扑 prompt 确认待处理 ---
+    # User was asked "generate topology prompt?". Handle yes → start skill session,
+    # no → decline, unknown → reminder.
+    # 已向用户询问"是否生成拓扑 prompt？"。处理 是 → 启动 skill 会话，
+    # 否 → 拒绝，未知 → 提醒。
     pending_topology_prompt = state.get("pending_topology_prompt_request")
     pending_topology_context = state.get("pending_topology_prompt_context")
     if isinstance(pending_topology_prompt, dict):
@@ -1630,6 +1752,13 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
+    # --- Phase 6: Topology intent detection ---
+    # --- 阶段 6：拓扑意图检测 ---
+    # For new human messages, use an internal LLM call to detect whether the user
+    # intends to create/deploy a topology. If so, ask for confirmation before
+    # starting the generation workflow.
+    # 对新的用户消息，使用内部 LLM 调用检测用户是否想创建/部署拓扑。
+    # 若是，先请求确认再启动生成流程。
     should_ask_topology_confirmation = False
     if _is_human_message(last_message) and not quality_pending_reset:
         try:
@@ -1674,6 +1803,12 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
+    # --- Phase 7: RAG no-evidence guard ---
+    # --- 阶段 7：RAG 无证据守护 ---
+    # If the last tool result is a Fortinet doc search with no evidence,
+    # show a clarification UI instead of letting the LLM hallucinate.
+    # 如果上一个工具结果是未找到证据的 Fortinet 文档检索，
+    # 显示澄清 UI 而非让 LLM 产生幻觉。
     rag_tool_result = _extract_latest_fortinet_doc_result(messages)
     if isinstance(rag_tool_result, dict) and _safe_bool(
         rag_tool_result.get("no_evidence"), default=False
@@ -1697,6 +1832,8 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
             result["simulated_topology"] = simulated_topology
         return result
 
+    # --- Phase 8: RAG auto-retrieval ---
+    # --- 阶段 8：RAG 自动检索 ---
     # Enforce retrieval-first behavior for Fortinet requests.
     if _is_rag_enabled() and fortigate_context and _is_human_message(last_message):
         latest_query = _latest_human_text(messages)
@@ -1722,6 +1859,15 @@ def llm_call(state: dict, config: RunnableConfig | None = None):
                 result["simulated_topology"] = simulated_topology
             return result
 
+    # --- Phase 9: Normal LLM call with tools ---
+    # --- 阶段 9：常规带工具的 LLM 调用 ---
+    # No special state pending — invoke the main model with all tools bound.
+    # If the LLM produces a FortiGate config tool call, intercept it and
+    # enter the confirmation flow (quality review in dry-run, or direct confirm).
+    # 无特殊状态待处理 —— 调用绑定所有工具的主模型。
+    # 若 LLM 产出 FortiGate 配置工具调用，拦截并进入确认流程
+    # （dry-run 下为质量审核，否则为直接确认）。
+    #
     # Create fresh model with tools for each LLM call
     # This ensures configuration changes in .env take effect immediately
     # 为每次 LLM 调用创建新的带工具的模型
@@ -2007,10 +2153,25 @@ def recursion_limit_continue(state: MessagesState) -> Literal["llm_call", END]:
     return END
 
 
-# Build and compile the agent
-# 构建并编译代理
-# Build workflow
-# 构建工作流
+# ---------------------------------------------------------------------------
+# LangGraph workflow construction
+# LangGraph 工作流构建
+#
+# Graph topology (visual):
+# 图拓扑（可视化）：
+#
+#   START → llm_call ──┬──→ tool_node ──→ (recursion check) ──→ llm_call (loop)
+#                      │                                   └──→ END
+#                      ├──→ title_generator_node ──→ END
+#                      └──→ END
+#
+# - llm_call: decides tool calls or produces final response
+#   llm_call：决定工具调用或产出最终响应
+# - tool_node: executes tool calls (real or dry-run simulated)
+#   tool_node：执行工具调用（真实的或 dry-run 模拟的）
+# - title_generator_node: generates conversation title on first turn
+#   title_generator_node：在第一轮生成对话标题
+# ---------------------------------------------------------------------------
 agent_builder = StateGraph(MessagesState)
 
 # Add nodes
