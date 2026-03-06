@@ -132,7 +132,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-"gns3_copilot" = ["ui_model/styles/*.css"]
+"gns3_copilot" = ["ui_model/styles/*.css", "prompts/*.txt"]
 
 [tool.black]
 line-length = 88
