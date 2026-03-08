@@ -146,6 +146,15 @@ LLM 基于 `build_topology_skill_phase_prompt(phase="topology_overview", ...)` �
 
 **此阶段注入完整风格参考和完整 SKILL 文档**，为 LLM 提供全貌。
 
+**[FortiGate Skill 补充]** 当 `fortigate-topology` 技能激活时，Phase 1 额外约束：
+- 识别 FortiGate 数量（例如总部 + 分支 = 2 台）
+- 为每台 FortiGate 绑定站点角色与对应内网/WAN
+- 当用户未指定 IP 时，自动分配合理默认值：
+  - WAN 口：192.168.122.x/24（模拟公网）
+  - 内网：10.1.x.0/24、10.2.x.0/24 等
+  - VPN 预共享密钥：默认使用 `Fortinet123#`
+- 仅当真正高影响歧义（如设备数量不确定）时才澄清
+
 校验：`validate_phase_output(phase="topology_overview")` — 检查 `## 拓扑概要` 章节存在。
 
 输出展示给用户，通过 `build_phase_confirmation_message()` 提示确认或修改：
@@ -157,6 +166,15 @@ LLM 基于 `build_topology_skill_phase_prompt(phase="topology_overview", ...)` �
 LLM 基于已确认的 Phase 1 概要生成：
 - `## 节点清单`（名称、模板、站点）
 - `## 链路清单`（两端节点与端口）
+
+**[FortiGate Skill 补充]** 当 `fortigate-topology` 技能激活时，Phase 2 额外约束：
+- `port1` 仅保留管理用途，不作为业务网关口
+- 业务网段从 `port2` 及以上接口承载
+- 站点互联场景节点骨架参考：
+  - HQ-FGT（总部 FortiGate）、BR-FGT（分支 FortiGate）
+  - HQ-SW-Office / HQ-SW-Server / BR-SW-Office（内网交换机）
+  - WAN-SW（模拟 WAN 互联的交换机或 Cloud）
+  - NAT（提供上网出口）
 
 校验：`validate_phase_output(phase="node_and_link_plan")` — 检查两个章节存在。
 
@@ -171,6 +189,26 @@ LLM 基于已确认的 Phase 1+2 内容生成：
 
 **SKILL 文档仅注入 Phase 3 相关片段**（含澄清规则段），风格参考不再注入。
 
+**[FortiGate Skill 补充]** 当 `fortigate-topology` 技能激活时，Phase 3 额外约束：
+
+配置完整性要求：
+- 必须包含 `config system interface`、`config router static`、`config firewall policy`
+- 静态路由需明确远端业务网段走 VPN，默认路由走本地 WAN
+  - 路由须包含 `set dst` 和 `set device`
+- "本地上网仍走本地 WAN"必须被保留，不可被全局 VPN 路由覆盖
+
+站点互联（当请求提到 IPsec/VPN）：
+- 两端均要有完整 Phase1/Phase2 配置：
+  - `config vpn ipsec phase1-interface`
+  - `config vpn ipsec phase2-interface`
+  - `set psksecret`
+  - 当拓扑概要指定 IKEv2 时，必须显式设置 `set ike-version 2`（FortiGate 默认可能为 IKEv1）
+- 双边内网需可互访的防火墙策略
+
+步骤顺序要求：
+- 创建节点 → 创建链路 → 启动 → wait_for_nodes_ready → configure_node → 验证
+- 建议先配置接口和路由，再配置 VPN，最后配置策略
+
 校验：`validate_phase_output(phase="execution_steps")` — 检查三个章节存在。
 **条件校验**（仅 FortiGate 场景）：
 - 检查 `config system interface`、`config router static`、`config firewall policy` 等关键标记
@@ -184,6 +222,10 @@ LLM 基于已确认的 Phase 1+2 内容生成：
 ### 5.4 Phase 4: 合并最终输出（`completed`）
 
 自动将所有已确认层合并为完整可执行 prompt，校验通过后返回 `status="completed"`。
+
+**[FortiGate Skill 补充]** 当 `fortigate-topology` 技能激活时，Phase 4 额外约束：
+- FortiGate 完整 CLI 配置块必须内联在执行步骤中
+- 不输出和执行无关的解释性段落
 
 ### 5.5 每个阶段的状态流转
 
@@ -204,6 +246,13 @@ Phase 1 ──确认──> Phase 2 ──确认──> Phase 3 ──确认─�
  修改意见          修改意见          修改意见
  (重新生成)       (重新生成)       (重新生成)
 ```
+
+### 5.6 FortiGate Skill 澄清规则
+
+当 `fortigate-topology` 技能激活且信息不足时，遵循以下澄清规则：
+- 优先询问高影响缺失项（对端公网地址、内网网段、IKE 提案等）
+- 问题必须使用 `clarify_options` 格式
+- 一次只问一个问题
 
 ---
 
